@@ -113,6 +113,7 @@ Pair the board with the PC first. The bridge connects alongside the system's gam
 
 - Wi-Fi and Bluetooth share one radio. With both on, ESP-IDF requires Wi-Fi modem sleep, which adds jitter to Wi-Fi round trips. If you only use Wi-Fi native mode, `set radio wifi` keeps Wi-Fi fully awake. That also turns off the Xbox pad.
 - Bluetooth asks for a 7.5 ms connection interval. The host decides what it actually gets.
+- A Wi-Fi client that sends nothing for 5 s is dropped, so a sleeping PC doesn't keep the Xbox pad muted. A Bluetooth client stops being native when it unsubscribes from INPUT or disconnects.
 
 ## Protocol reference
 
@@ -157,3 +158,4 @@ python3 test_net.py /path/to/DIVA_Bridge_project/diva_bridge.py        # TCP pro
 | `src/BleBridge.*` | Xbox BLE pad + DIVA Bridge GATT service |
 | `src/Settings.*` | NVS settings and the serial console |
 | `tools/DIVA_Bridge_ESP32_Setup.html` | Web Serial setup page |
+| `lib/ESP32-BLE-CompositeHID` | [Mystfit's library](https://github.com/Mystfit/ESP32-BLE-CompositeHID) (MIT) @ 06d93ea, patched so one central disconnecting doesn't mute the pad for the others |

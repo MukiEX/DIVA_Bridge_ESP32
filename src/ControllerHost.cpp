@@ -24,7 +24,10 @@ SemaphoreHandle_t lock = nullptr;  // guards `act` setup/teardown vs ledTask
 // Addresses reported by NEW_DEV, opened from the client task.
 uint8_t pendingNew[MAX_PENDING_NEW];
 std::atomic<int> pendingNewCount{0};
-std::atomic<bool> gone{false};  // DEV_GONE for the active device
+std::atomic<bool> gone{false};
+// An endpoint errored/stalled; recovered from the client task (not callbacks).
+std::atomic<int> inRecover{0};   // 0 none, 1 error, 2 stall
+std::atomic<int> outRecover{0};  // DEV_GONE for the active device
 
 struct Active {
   bool open = false;
@@ -91,10 +94,16 @@ void inCallback(usb_transfer_t *t) {
              t->status != USB_TRANSFER_STATUS_NO_DEVICE) {
     Serial.printf("[USB] IN transfer status %d\n", (int)t->status);
   }
-  bool retry = t->status == USB_TRANSFER_STATUS_COMPLETED ||
-               t->status == USB_TRANSFER_STATUS_TIMED_OUT ||
-               t->status == USB_TRANSFER_STATUS_ERROR;
-  if (!act.closing && retry) submitIn();
+  if (act.closing) return;
+  if (t->status == USB_TRANSFER_STATUS_COMPLETED) {
+    if (!submitIn()) inRecover = 1;
+  } else if (t->status == USB_TRANSFER_STATUS_STALL) {
+    inRecover = 2;  // endpoint halted: clear it from the client task
+  } else if (t->status == USB_TRANSFER_STATUS_ERROR ||
+             t->status == USB_TRANSFER_STATUS_TIMED_OUT ||
+             t->status == USB_TRANSFER_STATUS_OVERFLOW) {
+    inRecover = 1;
+  }
 }
 
 bool submitOutChunk() {
@@ -110,6 +119,10 @@ void outCallback(usb_transfer_t *t) {
   bool more = t->status == USB_TRANSFER_STATUS_COMPLETED &&
               act.outPos < act.outLen && !act.closing;
   if (more && submitOutChunk()) return;
+  if (!act.closing && t->status != USB_TRANSFER_STATUS_COMPLETED &&
+      t->status != USB_TRANSFER_STATUS_CANCELED &&
+      t->status != USB_TRANSFER_STATUS_NO_DEVICE)
+    outRecover = t->status == USB_TRANSFER_STATUS_STALL ? 2 : 1;
   act.outBusy = false;
   if (ledTask) xTaskNotifyGive(ledTask);  // pick up anything newer
 }
@@ -207,7 +220,8 @@ void openDevice(uint8_t addr) {
   act.prof = p;
   act.vid = vid;
   act.pid = pid;
-  bool ok = chooseEndpoints(cfg, *p);
+  bool claimed = chooseEndpoints(cfg, *p);
+  bool ok = claimed;
   if (ok) ok = usb_host_transfer_alloc(act.mpsIn < 64 ? 64 : act.mpsIn, 0, &act.in) == ESP_OK;
   if (ok && act.epOut)
     ok = usb_host_transfer_alloc(MAX_DEVICE_OUT, 0, &act.out) == ESP_OK;
@@ -215,6 +229,7 @@ void openDevice(uint8_t addr) {
     Serial.printf("[USB] found the %s but couldn't claim its interface\n", p->name);
     if (act.in) usb_host_transfer_free(act.in);
     if (act.out) usb_host_transfer_free(act.out);
+    if (claimed) usb_host_interface_release(client, dev, act.intf);
     act = Active();
     xSemaphoreGive(lock);
     usb_host_device_close(client, dev);
@@ -235,7 +250,70 @@ void openDevice(uint8_t addr) {
   Serial.printf("[USB] %s connected (%04X:%04X; IN 0x%02x%s; %s)\n", p->name, vid,
                 pid, act.epIn, act.epOut ? "" : ", no OUT endpoint", p->ledNote);
   DivaState::setController(p, vid, pid);
-  submitIn();
+  inRecover = 0;
+  outRecover = 0;
+  if (!submitIn()) {
+    Serial.println("[USB] couldn't start reading the controller");
+    gone = true;  // tear it down from the client loop
+  }
+}
+
+// ---------------------------------------------------- endpoint recovery
+std::atomic<bool> ctrlDone{false};
+void ctrlCallback(usb_transfer_t *) { ctrlDone = true; }
+
+/** CLEAR_FEATURE(ENDPOINT_HALT) to the device, for a stalled endpoint. */
+bool clearHaltOnDevice(uint8_t ep) {
+  usb_transfer_t *t;
+  if (usb_host_transfer_alloc(sizeof(usb_setup_packet_t), 0, &t) != ESP_OK) return false;
+  usb_setup_packet_t *sp = (usb_setup_packet_t *)t->data_buffer;
+  sp->bmRequestType = USB_BM_REQUEST_TYPE_DIR_OUT | USB_BM_REQUEST_TYPE_TYPE_STANDARD |
+                      USB_BM_REQUEST_TYPE_RECIP_ENDPOINT;
+  sp->bRequest = USB_B_REQUEST_CLEAR_FEATURE;
+  sp->wValue = 0;  // ENDPOINT_HALT
+  sp->wIndex = ep;
+  sp->wLength = 0;
+  t->num_bytes = sizeof(usb_setup_packet_t);
+  t->device_handle = act.dev;
+  t->bEndpointAddress = 0;
+  t->callback = ctrlCallback;
+  ctrlDone = false;
+  bool ok = usb_host_transfer_submit_control(client, t) == ESP_OK;
+  for (int i = 0; ok && !ctrlDone && i < 50; i++)
+    usb_host_client_handle_events(client, pdMS_TO_TICKS(10));
+  ok = ok && ctrlDone && t->status == USB_TRANSFER_STATUS_COMPLETED;
+  if (!ctrlDone) return false;  // still owned by the stack; leak rather than free
+  usb_host_transfer_free(t);
+  return ok;
+}
+
+/** Flush + clear a halted endpoint (and the device side for a stall). */
+bool recoverEndpoint(uint8_t ep, bool stall) {
+  usb_host_endpoint_halt(act.dev, ep);  // no-op if the error already halted it
+  usb_host_endpoint_flush(act.dev, ep);
+  for (int i = 0; i < 10 && ep == act.epIn && act.inFlight > 0; i++)
+    usb_host_client_handle_events(client, pdMS_TO_TICKS(10));
+  if (stall && !clearHaltOnDevice(ep)) return false;
+  return usb_host_endpoint_clear(act.dev, ep) == ESP_OK;
+}
+
+void recover() {
+  if (int r = inRecover.exchange(0)) {
+    Serial.printf("[USB] IN endpoint %s - recovering\n", r == 2 ? "stalled" : "error");
+    if (!recoverEndpoint(act.epIn, r == 2) || !submitIn()) {
+      Serial.println("[USB] recovery failed - dropping the controller");
+      gone = true;
+      return;
+    }
+  }
+  if (int r = outRecover.exchange(0)) {
+    Serial.printf("[USB] OUT endpoint %s - recovering\n", r == 2 ? "stalled" : "error");
+    act.outBusy = false;
+    if (!recoverEndpoint(act.epOut, r == 2)) {
+      Serial.println("[USB] LED endpoint unusable - LEDs off until replug");
+      act.epOut = 0;
+    }
+  }
 }
 
 void closeActive() {
@@ -284,6 +362,11 @@ void clientLoop(void *) {
   ESP_ERROR_CHECK(usb_host_client_register(&cc, &client));
   while (true) {
     usb_host_client_handle_events(client, pdMS_TO_TICKS(100));
+    if (act.open && !act.closing && (inRecover || outRecover)) {
+      xSemaphoreTake(lock, portMAX_DELAY);
+      recover();
+      xSemaphoreGive(lock);
+    }
     if (gone && act.open) closeActive();
     while (pendingNewCount > 0) {
       uint8_t addr = pendingNew[pendingNewCount - 1];
@@ -299,7 +382,7 @@ void ledLoop(void *) {
   while (true) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     xSemaphoreTake(lock, portMAX_DELAY);
-    if (act.open && !act.closing && act.out && !act.outBusy) {
+    if (act.open && !act.closing && act.out && act.epOut && !act.outBusy) {
       size_t n = DivaState::takeLeds(dla, sizeof(dla));
       size_t m = n ? ledsToDevice(*act.prof, DivaState::options(), dla, n, report) : 0;
       // Don't resend identical frames (except to a Divaller, as the PC bridge).

@@ -5,6 +5,8 @@
 #include <XboxGamepadDevice.h>
 #include <string.h>
 
+#include <atomic>
+
 #include "DivaState.h"
 #include "Settings.h"
 
@@ -19,7 +21,10 @@ constexpr uint32_t MIN_SEND_MS = 4;        // don't flood the BLE queue
 constexpr uint32_t MOTION_HOLD_MS = 60;    // stick held after a swipe step
 constexpr int16_t STICK_MAX = 32767;
 
-NimBLEServer *server = nullptr;
+// Set last in onStarted(), once every characteristic exists.
+std::atomic<NimBLEServer *> server{nullptr};
+// The library's own advertising start has happened (ours may restart it).
+bool advStarted = false;
 NimBLECharacteristic *chControl = nullptr;
 NimBLECharacteristic *chInput = nullptr;
 NimBLECharacteristic *chLeds = nullptr;
@@ -30,6 +35,8 @@ TaskHandle_t outTask = nullptr;
 portMUX_TYPE nmux = portMUX_INITIALIZER_UNLOCKED;
 uint16_t nativeConns[MAX_NATIVE];
 int nativeCount = 0;
+
+inline NimBLEServer *s_server() { return server.load(std::memory_order_acquire); }
 
 bool isNative(uint16_t h) {
   for (int i = 0; i < nativeCount; i++)
@@ -85,7 +92,7 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
                     v.size() > 4 ? v.data()[4] : 0, info.getMTU());
       addNative(h);
       // 7.5 ms connection interval for the lowest latency.
-      server->updateConnParams(h, 6, 6, 0, 200);
+      s_server()->updateConnParams(h, 6, 6, 0, 200);
     } else if (v.size() >= 3 && memcmp(v.data(), "BYE", 3) == 0) {
       removeNative(h);
     }
@@ -108,6 +115,11 @@ class LedCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 class InputCallbacks : public NimBLECharacteristicCallbacks {
+  // A relay that crashes without "BYE" while the PC keeps the link up for its
+  // gamepad driver: NimBLE reports the unsubscribe (also on disconnect).
+  void onSubscribe(NimBLECharacteristic *, NimBLEConnInfo &info, uint16_t sub) override {
+    if (sub == 0) removeNative(info.getConnHandle());
+  }
   void onRead(NimBLECharacteristic *c, NimBLEConnInfo &) override {
     uint8_t buf[EXT_PACKET_LEN];
     if (!DivaState::readExt(buf)) idlePacket(buf), buf[24] = buf[25] = 0;
@@ -122,7 +134,6 @@ class DivaHid : public BleCompositeHID {
 
  protected:
   void onStarted(NimBLEServer *s) override {
-    server = s;
     if (Settings::consumeUnpair()) {
       NimBLEDevice::deleteAllBonds();
       Serial.println("[BLE] all pairings forgotten");
@@ -144,6 +155,7 @@ class DivaHid : public BleCompositeHID {
     uint8_t st[8];
     statusBytes(st);
     chControl->setValue(st, sizeof(st));
+    server.store(s, std::memory_order_release);
     Serial.println("[BLE] DIVA Bridge service ready");
   }
 };
@@ -232,8 +244,9 @@ void neutralPad() {
  * second central (e.g. the bridge relay next to the OS HID driver, or a
  * second machine) can still connect. */
 void housekeeping() {
-  if (!server) return;
-  std::vector<uint16_t> peers = server->getPeerDevices();
+  NimBLEServer *srv = s_server();
+  if (!srv) return;
+  std::vector<uint16_t> peers = srv->getPeerDevices();
   uint16_t stale[MAX_NATIVE];
   int n = 0;
   portENTER_CRITICAL(&nmux);
@@ -248,19 +261,25 @@ void housekeeping() {
   static size_t lastPeers = 0;
   if (peers.size() > lastPeers) {
     // New central: ask for the shortest interval (the host decides).
-    for (uint16_t p : peers) server->updateConnParams(p, 6, 6, 0, 200);
+    for (uint16_t p : peers) srv->updateConnParams(p, 6, 6, 0, 200);
   }
   lastPeers = peers.size();
 
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
-  if (adv && !adv->isAdvertising() && peers.size() < CONFIG_BT_NIMBLE_MAX_CONNECTIONS)
-    adv->start();
+  if (!adv) return;
+  // Only restart advertising after the library's own start (it sets the
+  // gamepad appearance and HID UUID, and starts the GATT server).
+  if (!advStarted) {
+    advStarted = adv->isAdvertising() || !peers.empty();
+    return;
+  }
+  if (!adv->isAdvertising() && peers.size() < CONFIG_BT_NIMBLE_MAX_CONNECTIONS) adv->start();
 }
 
 void outputLoop(void *) {
   uint32_t lastSeq = ~0u, lastSend = 0, lastHouse = 0;
   uint8_t lastStatus[8] = {};
-  bool wasNative = false, padDirty = true, nativeDirty = true;
+  bool wasNative = false, padDirty = true, nativeDirty = true, padWasUp = false;
   uint8_t pkt[EXT_PACKET_LEN];
   while (true) {
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MIN_SEND_MS));
@@ -269,7 +288,8 @@ void outputLoop(void *) {
       lastHouse = now;
       housekeeping();
     }
-    if (!server) continue;
+    NimBLEServer *srv = s_server();
+    if (!srv) continue;
 
     // Status changes (controller plugged/unplugged, native count) -> notify.
     uint8_t st[8];
@@ -298,18 +318,23 @@ void outputLoop(void *) {
       lastSend = now;
     }
 
-    if (hid->isConnected()) {
+    // Per-connection check: the library's flag only tracks authentication.
+    bool padUp = srv->getConnectedCount() > 0 && hid->isConnected();
+    if (padUp && !padWasUp) padDirty = true;  // (re)connected: send current state
+    padWasUp = padUp;
+    if (padUp) {
       if (native) {
         if (!wasNative) neutralPad();  // hand over to the native client
+        padDirty = false;
       } else {
         bool motionActive = halves[0].out || halves[1].out;
         if (padDirty || motionActive || wasNative) {
           updatePad(pkt, pkt[24] | pkt[25] << 8, now);
           lastSend = now;
+          padDirty = false;
         }
       }
     }
-    padDirty = false;
     wasNative = native;
     lastSeq = seq;
   }
@@ -336,6 +361,9 @@ void begin() {
   DivaState::setInputListener(outTask);
 }
 
-int connections() { return server ? server->getConnectedCount() : 0; }
+int connections() {
+  NimBLEServer *srv = s_server();
+  return srv ? srv->getConnectedCount() : 0;
+}
 
 }  // namespace BleBridge

@@ -65,6 +65,11 @@ try:
     # Unplug
     ctl("unplug"); assert req(s, b"P", 1) == b"\x00"
     s.close(); time.sleep(0.2); assert ctl("noop") == "ack native=0"
+    # A client that goes silent is released after the 5 s receive timeout
+    s4 = socket.create_connection(("127.0.0.1", port)); assert req(s4, b"P", 1) == b"\x00"
+    assert ctl("noop") == "ack native=1"
+    time.sleep(5.6); assert ctl("noop") == "ack native=0", "silent client should time out"
+    s4.close()
     print("ALL OK")
 finally:
     srv.kill()

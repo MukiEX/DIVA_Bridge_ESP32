@@ -39,6 +39,11 @@ bool sendAll(int s, const uint8_t *buf, size_t n) {
 }  // namespace
 
 void serve(int s, const char *who) {
+  // Games poll continuously; a client silent this long has gone (PC asleep,
+  // Wi-Fi dropped) - let it go so the Xbox pad comes back.
+  struct timeval tv = {5, 0};
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
   bool native = false;
   uint8_t buf[2 + 256];
   while (true) {
