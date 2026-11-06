@@ -1,6 +1,10 @@
 #include "Settings.h"
 
 #include <Preferences.h>
+#include <esp_partition.h>
+#include <esp_random.h>
+
+#include "ConfigBlob.h"
 
 namespace Settings {
 
@@ -34,6 +38,8 @@ void load() {
   prefs.end();
 }
 
+void mirrorToPartition();
+
 void save() {
   prefs.begin("divabridge", false);
   prefs.putString("ssid", vals.ssid);
@@ -49,6 +55,7 @@ void save() {
   prefs.putUChar("otg_power", (uint8_t)vals.otgPower);
   prefs.end();
   dirty = false;
+  mirrorToPartition();
 }
 
 void printSettings() {
@@ -97,7 +104,7 @@ bool parseBool(const String &v, bool &out) {
   return false;
 }
 
-void setKey(const String &key, const String &value) {
+bool setKey(const String &key, const String &value, bool quiet = false) {
   bool ok = true;
   if (key == "ssid") vals.ssid = value;
   else if (key == "pass" || key == "password") vals.pass = value;
@@ -128,15 +135,115 @@ void setKey(const String &key, const String &value) {
     else if (value == "battery") vals.otgPower = OtgPower::Battery;
     else ok = false;
   } else {
-    Serial.printf("ERR unknown setting '%s' (try: help)\n", key.c_str());
-    return;
+    Serial.printf("ERR unknown setting '%s'%s\n", key.c_str(), quiet ? "" : " (try: help)");
+    return false;
   }
   if (!ok) {
     Serial.printf("ERR bad value for %s\n", key.c_str());
-    return;
+    return false;
   }
   dirty = true;
-  Serial.printf("OK %s set - 'save' to store and restart\n", key.c_str());
+  if (!quiet) Serial.printf("OK %s set - 'save' to store and restart\n", key.c_str());
+  return true;
+}
+
+// ------------------------------------------------- flasher settings blob
+const esp_partition_t *cfgPartition() {
+  return esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY,
+                                  "divacfg");
+}
+
+/** Current settings as "key=value" lines (the blob payload). */
+String settingsLines() {
+  String s;
+  s += "ssid=" + vals.ssid + "\n";
+  s += "pass=" + vals.pass + "\n";
+  s += "name=" + vals.name + "\n";
+  s += "port=" + String(vals.port) + "\n";
+  s += String("radio=") + radioName(vals.radio) + "\n";
+  s += String("slider=") + sliderName(vals.slider) + "\n";
+  s += "slider_reverse=" + String(vals.sliderReverse ? 1 : 0) + "\n";
+  s += "led_reverse=" + String(vals.ledReverse ? 1 : 0) + "\n";
+  s += "leds=" + String(vals.leds ? 1 : 0) + "\n";
+  s += String("xbox=") + (vals.xboxOneS ? "ones" : "seriesx") + "\n";
+  s += String("otg_power=") + (vals.otgPower == OtgPower::Battery ? "battery" : "usb") + "\n";
+  return s;
+}
+
+/** Keep the partition in step with NVS, so the flasher can read what's
+ * really in use (also after changes made over serial). Same serial as the
+ * last applied blob, so it isn't applied again at the next boot. */
+void mirrorToPartition() {
+  const esp_partition_t *part = cfgPartition();
+  if (!part) return;
+  prefs.begin("divabridge", false);
+  uint32_t serial = prefs.getULong("cfg_serial", 0);
+  if (!serial) {
+    serial = esp_random() | 1;
+    prefs.putULong("cfg_serial", serial);
+  }
+  prefs.end();
+  String lines = settingsLines();
+  uint8_t *blob = (uint8_t *)malloc(ConfigBlob::PARTITION_SIZE);
+  if (!blob) return;
+  if (ConfigBlob::encode(lines.c_str(), lines.length(), serial, blob) &&
+      esp_partition_erase_range(part, 0, ConfigBlob::PARTITION_SIZE) == ESP_OK)
+    esp_partition_write(part, 0, blob, ConfigBlob::PARTITION_SIZE);
+  free(blob);
+}
+
+/** Apply a blob the flasher wrote, once. */
+void applyFromPartition() {
+  const esp_partition_t *part = cfgPartition();
+  if (!part) {
+    Serial.println("[Settings] no divacfg partition (old partition table?) - serial setup only");
+    return;
+  }
+  uint8_t *blob = (uint8_t *)malloc(ConfigBlob::PARTITION_SIZE);
+  if (!blob) return;
+  const char *payload;
+  size_t len;
+  uint32_t serial;
+  bool valid = esp_partition_read(part, 0, blob, ConfigBlob::PARTITION_SIZE) == ESP_OK &&
+               ConfigBlob::decode(blob, ConfigBlob::PARTITION_SIZE, payload, len, serial);
+  prefs.begin("divabridge", true);
+  uint32_t applied = prefs.getULong("cfg_serial", 0);
+  prefs.end();
+  if (!valid) {
+    free(blob);
+    mirrorToPartition();  // erased or damaged: write the current settings
+    return;
+  }
+  if (serial != applied) {
+    Serial.println("[Settings] applying settings from the web flasher");
+    String text(payload, len);
+    int start = 0;
+    bool unpair = false;
+    while (start < (int)text.length()) {
+      int end = text.indexOf('\n', start);
+      if (end < 0) end = text.length();
+      String l = text.substring(start, end);
+      start = end + 1;
+      if (l.endsWith("\r")) l.remove(l.length() - 1);
+      int eq = l.indexOf('=');
+      if (eq <= 0) continue;
+      String key = l.substring(0, eq), value = l.substring(eq + 1);
+      key.trim();
+      key.toLowerCase();
+      if (key == "unpair") {
+        unpair = value == "1";
+        continue;
+      }
+      if (key != "ssid" && key != "pass" && key != "password" && key != "name") value.trim();
+      setKey(key, value, true);
+    }
+    prefs.begin("divabridge", false);
+    prefs.putULong("cfg_serial", serial);
+    if (unpair) prefs.putBool("unpair", true);
+    prefs.end();
+    save();  // stores NVS and rewrites the blob (normalised, without unpair)
+  }
+  free(blob);
 }
 
 void handle(String cmd) {
@@ -185,7 +292,10 @@ void handle(String cmd) {
 }
 }  // namespace
 
-void begin() { load(); }
+void begin() {
+  load();
+  applyFromPartition();
+}
 
 Values &get() { return vals; }
 

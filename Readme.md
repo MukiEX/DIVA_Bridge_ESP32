@@ -35,7 +35,25 @@ One controller at a time. The serial log says so if a ZhouSensor is in the wrong
   - Some hubs won't come up unless their upstream port sees 5 V too. If yours stays dark, check whether your board has a solder jumper that feeds 5 V to the OTG port (often labelled `USB-OTG`).
 - **Espressif ESP32-S3-USB-OTG**: has a real USB-A host port with power, a battery connector and a charger. Build the `esp32s3_usb_otg` env. Choose where host-port power comes from with `set otg_power usb|battery`.
 
-## Build & flash
+## Flash & set up (web flasher)
+
+Open **`DIVA_Bridge_ESP32_Flasher.html`** in Chrome or Edge. It's a single file from the release, or build it yourself as described below. Then:
+
+1. Pick the board.
+2. Click **Connect**.
+3. Fill in Wi-Fi and the other options.
+4. Click **Install firmware + settings**.
+
+Later on:
+- **Write settings only** changes Wi-Fi or other options in about a second.
+- **Update firmware, keep settings** installs new firmware without touching the settings.
+- **Read from board** shows what the board is currently using.
+
+The settings live in a 4 KB `divacfg` partition at `0x310000` (see `partitions.csv` and `src/ConfigBlob.h`). The firmware applies a newly written set once at boot, and copies any change made over serial back into it. The flasher writes the bootloader, partition table, `boot_app0` and app separately, so a firmware update leaves Bluetooth pairings alone. Tick *Erase the whole flash first* to clear everything.
+
+For boards with a single USB-C port (which is a USB host in this firmware): hold **BOOT** while plugging it into the PC. The chip's ROM bootloader then answers on that port, and the flasher works the same.
+
+## Build
 
 PlatformIO, using the community [pioarduino](https://github.com/pioarduino/platform-espressif32) platform (Arduino-ESP32 3.x):
 
@@ -46,7 +64,14 @@ pio device monitor
 
 Flash through the UART/COM port. If the board won't take the upload, hold BOOT while plugging it in.
 
-## Setup (over USB serial)
+To build the standalone flasher with both boards' images embedded:
+
+```bash
+pio run -e esp32s3_devkit -e esp32s3_usb_otg
+python3 tools/build_flasher.py            # -> dist/DIVA_Bridge_ESP32_Flasher.html
+```
+
+## Setup over USB serial (alternative)
 
 Open **`tools/DIVA_Bridge_ESP32_Setup.html`** in Chrome or Edge, click **Connect** and pick the board's COM port. Fill in your Wi-Fi and press **Save & restart**. The Status box then shows the board's address.
 
@@ -145,6 +170,8 @@ python3 test_protocol.py /path/to/DIVA_Bridge_project/diva_bridge.py   # transla
 g++ -std=c++17 -pthread -Ihost_shim -o net_server net_server.cpp \
     ../src/NetProtocol.cpp ../src/DivaState.cpp ../src/DivaProtocol.cpp
 python3 test_net.py /path/to/DIVA_Bridge_project/diva_bridge.py        # TCP protocol, as the plugins use it
+g++ -std=c++17 -o config_cli config_cli.cpp ../src/ConfigBlob.cpp
+python3 test_flasher.py ../dist/DIVA_Bridge_ESP32_Flasher.html          # flasher vs. a simulated board (Playwright)
 ```
 
 ## Source layout
@@ -156,6 +183,9 @@ python3 test_net.py /path/to/DIVA_Bridge_project/diva_bridge.py        # TCP pro
 | `src/DivaState.*` | shared latest input / pending LEDs / native-client count |
 | `src/NetBridge.*`, `src/NetProtocol.*` | Wi-Fi, mDNS, TCP bridge server |
 | `src/BleBridge.*` | Xbox BLE pad + DIVA Bridge GATT service |
-| `src/Settings.*` | NVS settings and the serial console |
+| `src/Settings.*` | NVS settings, the serial console, the flasher's settings partition |
+| `src/ConfigBlob.*` | settings-partition format (shared with the flasher) |
+| `partitions.csv` | huge_app layout + `divacfg` |
+| `tools/flasher/`, `tools/build_flasher.py` | web flasher template and the script that embeds the firmware |
 | `tools/DIVA_Bridge_ESP32_Setup.html` | Web Serial setup page |
 | `lib/ESP32-BLE-CompositeHID` | [Mystfit's library](https://github.com/Mystfit/ESP32-BLE-CompositeHID) (MIT) @ 06d93ea, patched so one central disconnecting doesn't mute the pad for the others |

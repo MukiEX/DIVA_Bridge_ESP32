@@ -3,3 +3,5 @@
 test/protocol_cli
 __pycache__/
 test/net_server
+dist/
+test/config_cli
