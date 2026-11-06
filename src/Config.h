@@ -1,38 +1,31 @@
 /**
  * @file Config.h
- * @brief Global configuration constants for the USB-to-BLE Bridge.
+ * @brief Build-time board options. Runtime settings (Wi-Fi, names, slider
+ * mode...) live in NVS and are changed over serial - see Settings.h.
  */
 
-#ifndef CONFIG_H
-#define CONFIG_H
-
-#include <Arduino.h>
-
-// ============================================================================
-// CONFIGURATION - Edit these to customize behavior
-// ============================================================================
-
-/** @brief Device names for each slot (will show up in Bluetooth settings) */
-#define DEVICE_NAME_1 "USB-BLE Dev 1"
-#define DEVICE_NAME_2 "USB-BLE Dev 2"
-#define DEVICE_NAME_3 "USB-BLE Dev 3"
-
-/** @brief Manufacturer name reported over BLE */
-#define DEVICE_MANUFACTURER "ESP32-S3"
-
-/** @brief Battery level reported over BLE (0-100) */
-#define BATTERY_LEVEL 100
-
-/** @brief Number of available device slots (maximum 3 recommended) */
-#define NUM_DEVICE_SLOTS 3
-
-/** @brief Key combo for device switching: Scroll Lock + number key */
-#define ENABLE_DEVICE_SWITCHING true
+#pragma once
 
 /**
- * @brief LED feedback pin (blinks to show current slot)
- * Set to -1 to disable, or use your board's built-in LED pin
+ * Status LED: lit while a controller is attached, blinks while a native
+ * client (game) is connected. -1 to disable.
+ * Generic ESP32-S3 DevKitC boards have an RGB LED that needs a driver, so
+ * this is off unless a board below sets it.
  */
-#define LED_FEEDBACK_PIN 2
+#ifndef STATUS_LED_PIN
+#define STATUS_LED_PIN -1
+#endif
 
-#endif // CONFIG_H
+/**
+ * Espressif ESP32-S3-USB-OTG board (build env "esp32s3_usb_otg"):
+ * its USB-A host port needs the USB switch flipped and its power enabled.
+ */
+#ifdef BOARD_ESP32_S3_USB_OTG
+#define OTG_USB_SEL_PIN 18      // high = USB_HOST port
+#define OTG_BOOST_EN_PIN 13     // high = host port powered from the battery
+#define OTG_DEV_VBUS_EN_PIN 12  // high = host port powered from the USB_DEV plug
+#define OTG_LIMIT_EN_PIN 17     // high = current limiter on (port output enabled)
+#define OTG_LED_GREEN_PIN 15
+#undef STATUS_LED_PIN
+#define STATUS_LED_PIN OTG_LED_GREEN_PIN
+#endif

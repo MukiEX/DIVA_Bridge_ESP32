@@ -1,131 +1,159 @@
-# ESP32-S3 USB to BLE Keyboard Bridge
+# DIVA Bridge ESP32
 
-Transform any USB keyboard into a Bluetooth wireless keyboard using ESP32-S3's native USB-OTG hardware.
-
-## What This Does
+Plug a Project DIVA slider controller into an ESP32-S3 and use it wirelessly:
 
 ```
-┌─────────────┐     USB-C OTG     ┌────────────┐     Bluetooth     ┌──────────────┐
-│ USB Keyboard│ ◄──────────────►  │ ESP32-S3   │ ◄───────────────► │ PC / Phone   │
-└─────────────┘                   └────────────┘                   └──────────────┘
+                                   ┌──────────── Bluetooth: Xbox controller (any PC / Quest / phone)
+Divaller / DIVA Pro /   USB   ┌────┴─────┐
+HORI NSW-230 / PS4-161 ─────► │ ESP32-S3 ├─── Wi-Fi: DIVA Bridge TCP server  (DivallerBridge.dva, BridgeSlider,
+   (powered hub)              └────┬─────┘                                      the Quest recomp - unchanged)
+                                   └──────────── Bluetooth: DIVA Bridge service (diva_bridge.py --device ble)
 ```
 
-Plug a USB keyboard into ESP32-S3's USB-C port and it becomes a Bluetooth keyboard that can connect to any BLE-compatible device (Windows, macOS, Linux, iOS, Android).
+- **Fallback: a Bluetooth Xbox controller.** Anything that pairs with it gets buttons, D-pad and the slider on the sticks.
+- **Native mode: the real slider and LEDs.** The board speaks the same protocol as [`diva_bridge.py`](https://github.com/MukiEX/DIVA_Bridge_project), over Wi-Fi or Bluetooth. A client turns native mode on by *handshaking*: over Wi-Fi its first bridge request counts, and over Bluetooth it writes `DIVA`. From then on the Xbox pad goes quiet, so the game doesn't see the controller twice. When the last native client leaves, the pad comes back.
 
-[![Demo](https://img.youtube.com/vi/dVUMYTfJw0s/maxresdefault.jpg)](https://youtu.be/dVUMYTfJw0s)
+Fork of [KoStard/ESP32S3-USB-Keyboard-To-BLE](https://github.com/KoStard/ESP32S3-USB-Keyboard-To-BLE). The keyboard bridge was replaced with a raw USB host client, because the Divaller isn't a HID device and the controllers need LED output.
 
-## Features
+## Controllers
 
-- **Native USB Host** - Uses ESP32-S3's hardware USB-OTG (no software emulation)
-- **Multi-Device Support** - Switch between 3 paired devices with a key combo
-- **Low Latency** - Direct HID report forwarding
-- **Universal Compatibility** - Works with Windows, macOS, Linux, iOS, Android, Smart TVs
+The controller tables are a straight port of `diva_bridge.py`. The test in `test/` checks them byte for byte against it.
 
-## Multi-Device Switching
+| Controller | VID:PID | Mode | LEDs |
+|---|---|---|---|
+| DJ-DAO Divaller | 0E8F:2213 | firmware 2.4, PC Driver Mode (purple) | slider + buttons |
+| ZhouSensor / DIVA Pro | 1973:8000 | **HDD** mode | slider |
+| HORI NSW-230 (Mega39's) | 0F0D:00FB | **Arcade** mode | – (lights itself) |
+| HORI PS4-161 (FT DX) | 0F0D:013C | **Arcade** mode | – (lights itself) |
 
-You can pair with up to **3 different devices** (e.g., PC, Laptop, Tablet) and switch between them using your keyboard.
+One controller at a time. The serial log says so if a ZhouSensor is in the wrong mode.
 
-| Key Combo | Action | Device Name |
-|-----------|--------|-------------|
-| **Scroll Lock + 1** | Switch to Device 1 | `USB-BLE Dev 1` |
-| **Scroll Lock + 2** | Switch to Device 2 | `USB-BLE Dev 2` |
-| **Scroll Lock + 3** | Switch to Device 3 | `USB-BLE Dev 3` |
+## Hardware
 
-**How it works:**
-1. Press `Scroll Lock + 1`. Pair "USB-BLE Dev 1" with your first computer.
-2. Press `Scroll Lock + 2`. The connection drops. Pair "USB-BLE Dev 2" with your second device.
-3. Switch back and forth instantly using the key combos!
-4. The active slot is **saved** and restored on reboot.
-5. The **LED** on GPIO 2 blinks to indicate the current slot (1, 2, or 3 blinks).
+- **Any ESP32-S3 DevKitC-style board** (N8R2, N16R8, …). The controller goes on the **USB/OTG** port and settings go over the **UART/COM** port.
+  - Most of these boards don't put 5 V on the OTG port, so use a **powered USB hub** between the board and the controller. The firmware supports hubs (it needs Arduino-ESP32 3.x).
+  - Some hubs won't come up unless their upstream port sees 5 V too. If yours stays dark, check whether your board has a solder jumper that feeds 5 V to the OTG port (often labelled `USB-OTG`).
+- **Espressif ESP32-S3-USB-OTG**: has a real USB-A host port with power, a battery connector and a charger. Build the `esp32s3_usb_otg` env. Choose where host-port power comes from with `set otg_power usb|battery`.
 
-## USB Keyboard Power
+## Build & flash
 
-**The USB-C port on most ESP32-S3 boards does NOT output 5V!**
-
-Even if you power the ESP32-S3 from the 5V pin, that power is NOT routed to the USB-C VBUS line.
-
-### Solutions
-
-#### Option 1: Powered USB Hub (Recommended)
-
-Use a powered USB hub between ESP32-S3 and keyboard:
-
-```
-ESP32-S3 USB-C ──► [Powered USB Hub] ──► USB Keyboard
-                         ▲
-                    External 5V
-```
-
-#### Option 2: External Power to Keyboard (untested)
-
-Power the keyboard directly, use USB-C only for data:
-
-```
-                      ┌──────────────┐
-    5V Power ─────────┤ USB Breakout ├──── USB Keyboard
-    Supply    GND ────┤    Board     │
-                      └──────┬───────┘
-                             │ D+/D- only (data)
-                      ┌──────┴───────┐
-                      │   ESP32-S3   │
-                      │   USB-C port │
-                      └──────────────┘
-```
-
-**Steps:**
-1. Cut a USB cable or get a USB breakout board
-2. Connect **5V and GND** from your power supply directly to keyboard's USB power
-3. Connect only **D+ and D-** (data lines) through the ESP32-S3 USB-C port
-
-#### Option 3: ESP32-S3-USB-OTG Board
-
-The **ESP32-S3-USB-OTG** development board has a dedicated USB-A host port with proper 5V output - no modifications needed.
-
-#### Option 4: Modify DevKit (Advanced)
-
-Some boards have solder pads to enable 5V on USB-C. Check your board's schematic for pads labeled "USB_OTG" or similar.
-
-## Quick Start
-
-### 1. Clone and Build
+PlatformIO, using the community [pioarduino](https://github.com/pioarduino/platform-espressif32) platform (Arduino-ESP32 3.x):
 
 ```bash
-git clone https://github.com/KoStard/ESP32S3-USB-Keyboard-To-BLE
-cd ESP32S3-USB-Keyboard-To-BLE
-
-# Build with PlatformIO
-pio run
-
-# Upload to ESP32-S3
-pio run -t upload
+pio run -e esp32s3_devkit -t upload      # or -e esp32s3_usb_otg
+pio device monitor
 ```
 
-## Configuration
+Flash through the UART/COM port. If the board won't take the upload, hold BOOT while plugging it in.
 
-### Device Name
+## Setup (over USB serial)
 
-Edit `src/Config.h`:
+Open **`tools/DIVA_Bridge_ESP32_Setup.html`** in Chrome or Edge, click **Connect** and pick the board's COM port. Fill in your Wi-Fi and press **Save & restart**. The Status box then shows the board's address.
 
-```cpp
-#define DEVICE_NAME_1 "USB-BLE Dev 1"
-#define DEVICE_MANUFACTURER "Custom"
+Or use any serial terminal at 115200 baud:
+
+```
+set ssid My Network
+set pass hunter2
+save
+status
 ```
 
-### Board Selection
+`help` lists everything: radio mode, Bluetooth name, slider mapping on the pad, reverse flags, LED forwarding, Xbox profile, pairing reset.
 
-The project is configured for `esp32-s3-devkitc-1`. For other boards, edit `platformio.ini`:
+## Using it
+
+### Bluetooth Xbox controller (any PC)
+
+Pair **"DIVA Bridge"** in the system's Bluetooth settings. It shows up as an Xbox controller (XInput on Windows).
+
+| Controller | Xbox |
+|---|---|
+| △ □ ✕ ○ | Y X A B |
+| FN / + / OPTIONS | Start |
+| L1 / − / SHARE | View |
+| L3 / HOME / PS | Guide |
+| L2 / CAPTURE / TOUCHPAD | Share |
+| D-pad, L/R, ZL/ZR, stick clicks (HORI, ZhouSensor) | D-pad, LB/RB, LT/RT, LS/RS |
+| Slider: left half / right half | left stick X / right stick X |
+
+There are three slider modes on the pad (`set slider …`):
+- `motion` (default): a swipe pushes that half's stick in the swipe's direction.
+- `position`: the touch position is the stick position.
+- `off`.
+
+### PD-Loader (TLAC) with DivallerBridge.dva, PC or the Quest recomp, over Wi-Fi
+
+In `DivallerBridge.ini`, point the plugin at the board instead of at a PC running the bridge:
 
 ```ini
-board = esp32-s3-devkitc-1  ; Change to your board
+[bridge]
+host=192.168.1.42        ; the board's address (see "status"), or diva-bridge.local
+port=45710
 ```
 
-Your board needs to have USB-OTG.
+No bridge program is needed on the PC. The plugin and its recomp talk to the board directly, as they did to the Steam Deck.
 
-## Hardware Limitations and Known Issues
+### Mega Mix+ with BridgeSlider, over Wi-Fi
 
-### USB Host Channel Limits
-The ESP32-S3 has a hardware limitation on the number of USB Host channels (pipes).
+Set BridgeSlider's bridge host/port to the board, the same way.
 
-**Consequence:** If you connect a complex hub with multiple devices (e.g., a "Gaming" keyboard that shows up as 3-4 different HID interfaces + a mouse + a hub), you may run out of hardware channels.
-- **Symptoms:** You will see `No more HCD channels available` in the Serial logs, and some devices or interfaces will fail to initialize.
-- **Recommendation:** Use a simple USB hub and avoid devices that present too many virtual interfaces if you plan to use them simultaneously.
+### Over Bluetooth instead of Wi-Fi (PC)
+
+Run the bridge with the board as its controller. It connects over Bluetooth, does the handshake, and serves the usual `127.0.0.1:45710` to the game, with the GUI and TUI working as usual:
+
+```bash
+pip install bleak
+python3 diva_bridge.py --device ble --tui         # or pick "DIVA Bridge ESP32 (Bluetooth)" in the GUI
+```
+
+Pair the board with the PC first. The bridge connects alongside the system's gamepad driver.
+
+## Latency notes
+
+- Wi-Fi and Bluetooth share one radio. With both on, ESP-IDF requires Wi-Fi modem sleep, which adds jitter to Wi-Fi round trips. If you only use Wi-Fi native mode, `set radio wifi` keeps Wi-Fi fully awake. That also turns off the Xbox pad.
+- Bluetooth asks for a 7.5 ms connection interval. The host decides what it actually gets.
+
+## Protocol reference
+
+**Wi-Fi (TCP, default port 45710)** uses the same protocol as `diva_bridge.py`:
+
+| Request | Reply |
+|---|---|
+| `P` | status(1): controller present |
+| `R` ep max | status len data — latest 24-byte Divaller packet |
+| `X` ep max | status len data — packet + 2 bytes extended buttons (LE) |
+| `W` ep len data | status — LED packet (100-byte `DLa`) |
+
+**Bluetooth LE** uses service `5e1a0000-d1ba-4b1d-9e00-000000d1ba00`, alongside the Xbox HID service:
+
+| UUID suffix | Props | Contents |
+|---|---|---|
+| `…0001` CONTROL | read, write, notify | write `DIVA`+version → native; `BYE` → leave. Read/notify: `[ver, present, kind, native_clients, VID LE, PID LE]` |
+| `…0002` INPUT | read, notify | 24-byte packet + 2 bytes extended buttons (same bytes as an `X` reply) |
+| `…0003` LEDS | write, write w/o response | 100-byte `DLa` packet (MTU ≥ 103, or a long write) |
+
+`kind`: 1 Divaller, 2 ZhouSensor, 3 HORI NSW-230, 4 HORI PS4-161.
+
+## Tests (on a PC)
+
+```bash
+cd test
+g++ -std=c++17 -O1 -o protocol_cli protocol_cli.cpp ../src/DivaProtocol.cpp
+python3 test_protocol.py /path/to/DIVA_Bridge_project/diva_bridge.py   # translators vs. diva_bridge.py
+g++ -std=c++17 -pthread -Ihost_shim -o net_server net_server.cpp \
+    ../src/NetProtocol.cpp ../src/DivaState.cpp ../src/DivaProtocol.cpp
+python3 test_net.py /path/to/DIVA_Bridge_project/diva_bridge.py        # TCP protocol, as the plugins use it
+```
+
+## Source layout
+
+| File | What |
+|---|---|
+| `src/DivaProtocol.*` | controller → Divaller packets, LED translation (portable C++) |
+| `src/ControllerHost.*` | USB host: finds the controller (hub OK), reads it, sends LEDs |
+| `src/DivaState.*` | shared latest input / pending LEDs / native-client count |
+| `src/NetBridge.*`, `src/NetProtocol.*` | Wi-Fi, mDNS, TCP bridge server |
+| `src/BleBridge.*` | Xbox BLE pad + DIVA Bridge GATT service |
+| `src/Settings.*` | NVS settings and the serial console |
+| `tools/DIVA_Bridge_ESP32_Setup.html` | Web Serial setup page |

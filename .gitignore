@@ -1,3 +1,5 @@
-.pio/
-.vscode/
-.aider*
+.pio
+.vscode
+test/protocol_cli
+__pycache__/
+test/net_server
