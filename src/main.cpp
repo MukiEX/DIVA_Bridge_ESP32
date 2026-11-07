@@ -24,6 +24,7 @@
 #include "NetBridge.h"
 #include "Settings.h"
 #include "Version.h"
+#include "boards/WatchDisplay.h"
 
 static void printStatus() {
   Serial.println("--- status ---");
@@ -82,6 +83,9 @@ void setup() {
   ControllerHost::begin();
   if (s.radio != Settings::Radio::WifiOnly) BleBridge::begin();
   NetBridge::begin();
+#ifdef BOARD_WS_AMOLED_206
+  WatchDisplay::begin();
+#endif
   Serial.println("Ready.");
 }
 

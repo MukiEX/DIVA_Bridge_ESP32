@@ -36,6 +36,8 @@ void load() {
   vals.leds = prefs.getBool("leds", true);
   vals.xboxOneS = prefs.getBool("xbox_ones", false);
   vals.otgPower = (OtgPower)prefs.getUChar("otg_power", 0);
+  vals.brightness = prefs.getUChar("brightness", 200);
+  vals.screenTimeout = prefs.getUShort("scr_timeout", 60);
   prefs.end();
 }
 
@@ -54,6 +56,8 @@ void save() {
   prefs.putBool("leds", vals.leds);
   prefs.putBool("xbox_ones", vals.xboxOneS);
   prefs.putUChar("otg_power", (uint8_t)vals.otgPower);
+  prefs.putUChar("brightness", vals.brightness);
+  prefs.putUShort("scr_timeout", vals.screenTimeout);
   prefs.end();
   dirty = false;
   mirrorToPartition();
@@ -73,6 +77,8 @@ void printSettings() {
   Serial.printf("leds=%d\n", vals.leds);
   Serial.printf("xbox=%s\n", vals.xboxOneS ? "ones" : "seriesx");
   Serial.printf("otg_power=%s\n", vals.otgPower == OtgPower::Battery ? "battery" : "usb");
+  Serial.printf("brightness=%u\n", vals.brightness);
+  Serial.printf("screen_timeout=%u\n", vals.screenTimeout);
   Serial.printf("unsaved=%d\n", dirty);
   Serial.println("--- end ---");
 }
@@ -93,6 +99,8 @@ void help() {
       "  set leds 0|1            forward LEDs to the controller\n"
       "  set xbox seriesx|ones   XInput profile for the fallback pad\n"
       "  set otg_power usb|battery  ESP32-S3-USB-OTG board: host port power\n"
+      "  set brightness 1-255    screen boards: brightness\n"
+      "  set screen_timeout <s>  screen boards: dim after idle seconds (0 = never)\n"
       "  save                    store settings and restart\n"
       "  forget                  erase Wi-Fi network and restart\n"
       "  unpair                  forget all Bluetooth pairings and restart\n"
@@ -131,6 +139,14 @@ bool setKey(const String &key, const String &value, bool quiet = false) {
     if (value == "seriesx") vals.xboxOneS = false;
     else if (value == "ones") vals.xboxOneS = true;
     else ok = false;
+  } else if (key == "brightness") {
+    long b = value.toInt();
+    ok = b >= 1 && b <= 255;
+    if (ok) vals.brightness = b;
+  } else if (key == "screen_timeout") {
+    long t = value.toInt();
+    ok = (t > 0 || value == "0") && t <= 3600;
+    if (ok) vals.screenTimeout = t;
   } else if (key == "otg_power") {
     if (value == "usb") vals.otgPower = OtgPower::UsbDev;
     else if (value == "battery") vals.otgPower = OtgPower::Battery;
@@ -168,6 +184,8 @@ String settingsLines() {
   s += "leds=" + String(vals.leds ? 1 : 0) + "\n";
   s += String("xbox=") + (vals.xboxOneS ? "ones" : "seriesx") + "\n";
   s += String("otg_power=") + (vals.otgPower == OtgPower::Battery ? "battery" : "usb") + "\n";
+  s += "brightness=" + String(vals.brightness) + "\n";
+  s += "screen_timeout=" + String(vals.screenTimeout) + "\n";
   s += "fw=" DIVA_BRIDGE_VERSION "\n";  // read-only: lets the flasher show the board's version
   return s;
 }

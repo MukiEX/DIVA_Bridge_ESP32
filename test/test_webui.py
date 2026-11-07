@@ -18,13 +18,13 @@ CTL = {  # name, kind, vid, pid
     "ps4": ("HORI PS4-161", 4, "0F0D", "013C"),
     "none": ("", 0, "0000", "0000"),
 }
-state = {"ctl": "divaller", "reports": 0}
+state = {"ctl": "divaller", "reports": 0, "screen": False}
 USB = [{"addr": 1, "parent": 0, "port": 0, "vid": "1A40", "pid": "0101", "cls": 9, "speed": "full", "product": "USB 2.0 Hub", "mfr": "", "role": "hub"},
        {"addr": 2, "parent": 1, "port": 2, "vid": "0E8F", "pid": "2213", "cls": 0, "speed": "full", "product": "Divaller", "mfr": "DJ DAO", "role": "controller: Divaller"}]
-posts = {"leds": [], "settings": []}
+posts = {"leds": [], "settings": [], "bg": [], "bgdel": 0}
 settings = {"ssid": "Home Net", "pass": "", "name": "DIVA Bridge", "port": "45710", "radio": "both",
             "slider": "motion", "slider_reverse": "0", "led_reverse": "0", "leds": "1", "xbox": "seriesx",
-            "otg_power": "usb", "pass_set": True}
+            "otg_power": "usb", "brightness": "200", "screen_timeout": "60", "pass_set": True}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -45,7 +45,8 @@ class H(BaseHTTPRequestHandler):
                     "reports": state["reports"], "native": 1, "tcp": 1, "ble": 1, "rssi": -48,
                     "port": 45710, "uptime": 3725, "heap": 180000, "radio": "both", "otg_board": False,
                     "name": name, "ip": "192.168.1.42", "host": "diva-bridge", "ssid": "Home Net",
-                    "btname": "DIVA Bridge", "fw": "0.4.0", "built": "Nov  6 2026 20:00:00"}
+                    "btname": "DIVA Bridge", "fw": "0.4.0", "built": "Nov  6 2026 20:00:00",
+                    "screen": state["screen"], "battery": 87 if state["screen"] else -1, "charging": state["screen"]}
             return self.send(200, json.dumps(body))
         if self.path == "/api/settings":
             return self.send(200, json.dumps(settings))
@@ -53,11 +54,19 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, json.dumps({"devices": USB if state["ctl"] != "none" else []}))
         self.send(404, "nf", "text/plain")
     def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        if self.path == "/api/background":
+            posts["bg"].append(raw); return self.send(200, '{"ok":true}')
+        body = raw.decode()
         if self.path == "/api/leds":
             posts["leds"].append(body); return self.send(200, '{"ok":true}')
         if self.path == "/api/settings":
             posts["settings"].append(body); return self.send(200, '{"ok":true}')
+        self.send(404, "nf", "text/plain")
+
+    def do_DELETE(self):
+        if self.path == "/api/background":
+            posts["bgdel"] += 1; return self.send(200, '{"ok":true}')
         self.send(404, "nf", "text/plain")
 
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -112,7 +121,23 @@ with sync_playwright() as p:
     body = posts["settings"][-1]
     assert "port=45711\n" in body and "slider=position\n" in body and "unpair=1\n" in body, body
     assert "pass=" not in body, "unchanged password must not be sent"
+    assert pg.is_hidden("#bgprev") and pg.is_hidden("#brightness")
     pg.screenshot(path=os.path.join(OUT, "settings.png"), full_page=True)
+    # Watch board: screen settings, battery, background upload/remove
+    state["screen"] = True; pg.reload(); pg.click("[data-tab=settings]"); pg.wait_for_timeout(600)
+    assert pg.is_visible("#brightness") and pg.is_visible("#bgprev")
+    assert "battery charging 87%" in pg.inner_text("#hostline"), pg.inner_text("#hostline")
+    from PIL import Image
+    img = os.path.join(OUT, "bg_src.png"); Image.new("RGB", (300, 900), (0, 255, 0)).save(img)
+    pg.set_input_files("#bgfile", img); pg.wait_for_function("!document.getElementById('bgsave').disabled")
+    pg.click("#bgsave"); pg.wait_for_function("document.getElementById('bginfo').textContent.includes('Done')")
+    raw = posts["bg"][-1]; i = raw.index(b"DVBG")
+    assert int.from_bytes(raw[i + 8:i + 12], "little") == 410 * 502 * 2
+    assert len(raw) > 12 + 410 * 502 * 2
+    pg.click("#bgclear"); pg.wait_for_timeout(300); assert posts["bgdel"] == 1
+    pg.select_option("#screen_timeout", "15"); pg.click("#save"); pg.wait_for_timeout(300)
+    assert "screen_timeout=15\n" in posts["settings"][-1], posts["settings"][-1]
+    pg.screenshot(path=os.path.join(OUT, "settings_watch.png"), full_page=True)
     # phone width: no horizontal scroll
     pg2 = b.new_page(viewport={"width": 390, "height": 800}); pg2.goto(url); pg2.wait_for_timeout(400)
     assert pg2.evaluate("document.documentElement.scrollWidth") <= 390

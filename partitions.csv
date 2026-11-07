@@ -1,9 +1,12 @@
 # DIVA Bridge ESP32 - huge_app layout plus a 4 KB "divacfg" partition the web
-# flasher writes settings into (fixed at 0x310000; tools/flasher relies on it).
+# setup page writes settings into (fixed at 0x310000), and a 404 KB "bgimage"
+# for screen boards' background picture (0x320000, 410x502 RGB565 + header).
+# The setup page relies on both offsets.
 # Fits 4 MB flash and up.
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x9000,   0x5000,
 otadata,  data, ota,     0xe000,   0x2000,
 app0,     app,  ota_0,   0x10000,  0x300000,
 divacfg,  data, 0x40,    0x310000, 0x1000,
+bgimage,  data, 0x41,    0x320000, 0x65000,
 coredump, data, coredump,0x3F0000, 0x10000,

@@ -53,6 +53,10 @@
   code { color: var(--cyan); }
   .pw { display: flex; gap: 6px; } .pw input { flex: 1; } .pw button { padding: 6px 10px; }
   [hidden] { display: none !important; }
+  .bgrow { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .bgprev { width: 205px; height: auto; border-radius: 22px; border: 3px solid #0b0b0e; outline: 1px solid var(--line); cursor: grab; touch-action: none; }
+  .bgctl { flex: 1; min-width: 220px; }
+  .bgctl input[type=range] { padding: 0; }
   .tree ul { list-style: none; margin: 0; padding-left: 22px; border-left: 1px dashed var(--line); }
   .tree > ul { padding-left: 0; border: 0; }
   .tree li { margin: 6px 0; }
@@ -161,6 +165,13 @@
         </div>
         <label for="otg_power" class="otgonly">Host port power</label>
         <select id="otg_power" class="otgonly"><option value="usb">From the USB_DEV plug</option><option value="battery">From the battery</option></select>
+        <label for="brightness" class="screenonly">Screen brightness</label>
+        <input id="brightness" class="screenonly" type="range" min="10" max="255" value="200">
+        <label for="screen_timeout" class="screenonly">Dim screen after</label>
+        <select id="screen_timeout" class="screenonly">
+          <option value="15">15 s idle</option><option value="30">30 s idle</option><option value="60">1 min idle</option>
+          <option value="300">5 min idle</option><option value="0">never</option>
+        </select>
       </div>
       <div class="row" style="margin-top:14px">
         <button class="primary" id="save">Save &amp; restart</button>
@@ -168,11 +179,29 @@
       </div>
       <p class="hint">Changing the network or the name can move the board to a different address. It reconnects within a few seconds of restarting.</p>
     </div>
+    <div class="panel screenonly">
+      <h2>Background picture</h2>
+      <div class="bgrow">
+        <canvas id="bgprev" width="410" height="502" class="bgprev" title="Drag to move the picture"></canvas>
+        <div class="bgctl">
+          <input type="file" id="bgfile" accept="image/*">
+          <label for="bgdim" style="display:block;margin-top:12px">Darken picture</label>
+          <input type="range" id="bgdim" min="0" max="80" value="25">
+          <p class="hint">Any picture works: it's scaled to fill the 410×502 screen and cropped. Drag the preview to choose which part shows. The preview shows where the panels sit.</p>
+          <div class="row" style="margin-top:10px">
+            <button class="primary" id="bgsave" disabled>Upload to the watch</button>
+            <button id="bgclear">Remove picture</button>
+          </div>
+          <span class="hint" id="bginfo"></span>
+        </div>
+      </div>
+    </div>
   </section>
 </main>
 
 <script>
 "use strict";
+/*BGIMAGE_JS*/
 const $ = (id) => document.getElementById(id);
 const BG = "#15161b", PANEL = "#23252d", TEXT = "#d8d8de", DIM = "#6b6e7a", CYAN = "#3fd7ea";
 const FACE = [["triangle", "Triangle", "#4fd06a"], ["square", "Square", "#e45dd0"],
@@ -359,6 +388,8 @@ function showState() {
   ];
   $("statustable").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v).replace(/</g, "&lt;")}</td></tr>`).join("");
   for (const el of document.querySelectorAll(".otgonly")) el.hidden = !st.otg_board;
+  for (const el of document.querySelectorAll(".screenonly")) el.hidden = !st.screen;
+  if (st.screen && st.battery >= 0) $("hostline").textContent += ` · battery ${st.charging ? "charging " : ""}${st.battery}%`;
 }
 async function poll() {
   try {
@@ -461,7 +492,7 @@ window.addEventListener("pagehide", () => {
 });
 
 // --------------------------------------------------------------- settings
-const FIELDS = ["ssid", "port", "radio", "name", "xbox", "slider", "otg_power"];
+const FIELDS = ["ssid", "port", "radio", "name", "xbox", "slider", "otg_power", "brightness", "screen_timeout"];
 const FLAGS = ["slider_reverse", "led_reverse", "leds"];
 async function loadSettings() {
   try {
@@ -497,6 +528,7 @@ $("save").onclick = async () => {
 $("showpw").onclick = () => { const p = $("pass"); p.type = p.type === "password" ? "text" : "password"; $("showpw").textContent = p.type === "password" ? "Show" : "Hide"; };
 
 // --------------------------------------------------------------- tabs
+for (const el of document.querySelectorAll(".screenonly")) el.hidden = true;
 for (const b of document.querySelectorAll(".tabs button")) {
   b.onclick = () => {
     for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
@@ -505,6 +537,24 @@ for (const b of document.querySelectorAll(".tabs button")) {
     if (b.dataset.tab === "status") fetch("/api/usb").then((r) => r.json()).then((j) => { usbPort = j.port || ""; usbReset = j.reset || ""; renderUsb(j.devices); }).catch(() => {});
   };
 }
+// --------------------------------------------------------------- background
+bgAttach($("bgfile"), $("bgprev"), $("bgdim"), () => { $("bgsave").disabled = !BGIMG.img; });
+$("bgsave").onclick = async () => {
+  $("bgsave").disabled = true; $("bginfo").textContent = "Uploading…";
+  try {
+    const fd = new FormData();
+    fd.append("image", new Blob([bgEncode()], { type: "application/octet-stream" }), "background.bin");
+    const j = await (await fetch("/api/background", { method: "POST", body: fd })).json();
+    if (!j.ok) throw new Error(j.error || "rejected");
+    $("bginfo").textContent = "Done: it's on the watch now.";
+  } catch (e) { $("bginfo").textContent = "Upload failed: " + e.message; }
+  $("bgsave").disabled = !BGIMG.img;
+};
+$("bgclear").onclick = async () => {
+  try { await fetch("/api/background", { method: "DELETE" }); $("bginfo").textContent = "Picture removed (back to the default)."; }
+  catch (e) { $("bginfo").textContent = "Couldn't remove it: " + e.message; }
+};
+
 draw(null);
 poll();
 pollUsb();

@@ -34,6 +34,10 @@ One controller at a time. The serial log says so if a ZhouSensor is in the wrong
   - Most of these boards don't put 5 V on the OTG port, so use a **powered USB hub** between the board and the controller. The firmware supports hubs (it needs Arduino-ESP32 3.x).
   - Some hubs won't come up unless their upstream port sees 5 V too. If yours stays dark, check whether your board has a solder jumper that feeds 5 V to the OTG port (often labelled `USB-OTG`).
 - **Espressif ESP32-S3-USB-OTG**: has a real USB-A host port with power, a battery connector and a charger. Build the `esp32s3_usb_otg` env. Choose where host-port power comes from with `set otg_power usb|battery`.
+- **Waveshare ESP32-S3-Touch-AMOLED-2.06** (the watch board): build the `esp32s3_amoled_206` env. Its 410×502 touch screen shows the controller live (slider, face buttons, L/R/FN, D-pad and shoulder names), the Wi-Fi address and port, game and Xbox-pad status, the report rate and the battery level, over a background picture you choose.
+  - It has **one USB-C port**, and this firmware makes it the controller port, so there's no serial console. To install or change settings from the setup page, hold **BOOT** while plugging it into the PC. Day to day, use its web page.
+  - The controller goes on that port through a **powered USB-C hub**. The watch runs from its battery meanwhile, unless the hub also feeds 5 V back up its host lead, which some do. A hub that won't wake without 5 V from the host won't work here.
+  - The screen dims after a set idle time (*Dim screen after*, default 1 min). Touching it, or any controller input, wakes it.
 
 ## Setup page (install, settings, console)
 
@@ -53,6 +57,8 @@ The page switches the port between flashing mode (Install and Settings) and the 
 
 The settings live in a 4 KB `divacfg` partition at `0x310000` (see `partitions.csv` and `src/ConfigBlob.h`). The firmware applies a newly written set once at boot. It copies any change made over serial or the web page back into that partition, together with its version, so *Read from board* always shows what's in use. Firmware updates write the bootloader, partition table, `boot_app0` and app separately, so they leave settings and pairings alone.
 
+**Background picture (watch board).** On the Settings tab, choose any picture. The page scales it to fill the 410×502 screen and crops the rest. Drag the preview to pick which part shows, and use *Darken picture* so the text stays readable. The preview draws the screen's panels on top. *Write picture* sends it on its own, and *Include the picture when installing* sends it with Install. *Remove picture* goes back to the default gradient. The board's own web page has the same panel and uploads over Wi-Fi with no cable. The picture lives in the `bgimage` partition at `0x320000`, as `"DVBG"`, u16 width, u16 height, u32 length, then RGB565 little-endian.
+
 For boards with a single USB-C port, which is a USB host in this firmware: hold **BOOT** while plugging the board into the PC, and Install and Settings work the same. The console can't follow it there, because after a restart the port belongs to the controller. Use the board's web page instead.
 
 ## Build
@@ -60,16 +66,16 @@ For boards with a single USB-C port, which is a USB host in this firmware: hold 
 PlatformIO, using the community [pioarduino](https://github.com/pioarduino/platform-espressif32) platform (Arduino-ESP32 3.x):
 
 ```bash
-pio run -e esp32s3_devkit -t upload      # or -e esp32s3_usb_otg
+pio run -e esp32s3_devkit -t upload      # or -e esp32s3_usb_otg / -e esp32s3_amoled_206
 pio device monitor
 ```
 
 Flash through the UART/COM port. If the board won't take the upload, hold BOOT while plugging it in.
 
-To build the standalone setup page with both boards' images embedded:
+To build the standalone setup page with every board's image embedded:
 
 ```bash
-pio run -e esp32s3_devkit -e esp32s3_usb_otg
+pio run -e esp32s3_devkit -e esp32s3_usb_otg -e esp32s3_amoled_206
 python3 tools/build_setup_page.py         # -> dist/DIVA_Bridge_ESP32_Setup.html
 ```
 
@@ -81,9 +87,9 @@ Once the board is on Wi-Fi, open **`http://diva-bridge.local/`**, or **`http://<
 
 - **Tester:** the controller, drawn like the DIVA Bridge GUI, with the live slider, buttons, D-pad and shoulder buttons. It also shows the report rate, raw packets, and whether a game or the Xbox pad is active. An LED test lights the slider where touched, as a rainbow or in white, and also drives the Divaller's button LEDs.
 - **Status:** the exact `DivallerBridge.ini` and BridgeSlider lines for this board, the **USB device tree**, the firmware version, and the Wi-Fi, Bluetooth and client counts.
-- **Settings:** the same options as the setup page. Saving restarts the board.
+- **Settings:** the same options as the setup page. Saving restarts the board. On the watch board it adds brightness, the dim timeout and the background picture upload, and the header shows the battery.
 
-The page only reads the controller, so it doesn't count as a game and the Xbox pad stays on. It runs on port 80, and the bridge port can't be set to 80. The page source is `web/index.html`; run `python3 tools/gen_webpage.py` after editing it.
+The page only reads the controller, so it doesn't count as a game and the Xbox pad stays on. It runs on port 80, and the bridge port can't be set to 80. The page source is `web/index.html`; run `python3 tools/gen_webpage.py` after editing it. `web/bgimage.js`, the picture scale/crop/encode code, is shared with the setup page and inlined into both.
 
 ## Serial console
 
@@ -203,7 +209,9 @@ python3 test_webui.py ../web/index.html /tmp/shots                     # on-devi
 | `src/WebUI.*`, `web/index.html` | port-80 tester / status / settings page (packed into `src/WebPage.h`) |
 | `src/Settings.*` | NVS settings, the serial console, the settings partition |
 | `src/ConfigBlob.*` | settings-partition format (shared with the setup page) |
+| `src/boards/WatchDisplay.*` | watch board: AMOLED screen UI, touch, battery (Arduino_GFX + U8g2 fonts) |
+| `web/bgimage.js` | background picture scale/crop/preview/encode (setup page + web page) |
 | `src/Version.h` | firmware version |
-| `partitions.csv` | huge_app layout + `divacfg` |
+| `partitions.csv` | huge_app layout + `divacfg` + `bgimage` |
 | `tools/setup_page/`, `tools/build_setup_page.py` | setup page template (install / settings / console) and the script that embeds the firmware |
 | `lib/ESP32-BLE-CompositeHID` | [Mystfit's library](https://github.com/Mystfit/ESP32-BLE-CompositeHID) (MIT) @ 06d93ea, patched so one central disconnecting doesn't mute the pad for the others |

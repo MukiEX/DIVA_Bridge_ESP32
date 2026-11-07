@@ -153,6 +153,13 @@
         </div>
         <label for="otg_power" class="otgonly">Host port power</label>
         <select id="otg_power" class="otgonly"><option value="usb">From the USB_DEV plug</option><option value="battery">From the battery</option></select>
+        <label for="brightness" class="screenonly">Screen brightness</label>
+        <input id="brightness" class="screenonly" type="range" min="10" max="255" value="200">
+        <label for="screen_timeout" class="screenonly">Dim screen after</label>
+        <select id="screen_timeout" class="screenonly">
+          <option value="15">15 s idle</option><option value="30">30 s idle</option><option value="60" selected>1 min idle</option>
+          <option value="300">5 min idle</option><option value="0">never</option>
+        </select>
       </div>
       <div class="row" style="margin-top:14px">
         <button id="writecfg" class="primary">Write settings</button>
@@ -160,10 +167,32 @@
       </div>
       <p class="hint">Takes about a second; the board restarts with the new settings. Once it's on Wi-Fi you can also change these on its own page at <code>http://diva-bridge.local/</code>.</p>
     </div>
+    <div class="panel screenonly">
+      <h2>Background picture</h2>
+      <div class="bgrow">
+        <canvas id="bgprev" width="410" height="502" class="bgprev" title="Drag to move the picture"></canvas>
+        <div class="bgctl">
+          <input type="file" id="bgfile" accept="image/*">
+          <label for="bgdim" style="display:block;margin-top:12px">Darken picture</label>
+          <input type="range" id="bgdim" min="0" max="80" value="25">
+          <p class="hint">Any picture works: it's scaled to fill the 410×502 screen and cropped to fit. Drag the preview to choose which part shows; the panels show where the text sits.</p>
+          <div class="check"><input type="checkbox" id="bginstall" checked><label for="bginstall">Include the picture when installing</label></div>
+          <div class="row" style="margin-top:10px">
+            <button class="primary" id="bgwrite" disabled>Write picture</button>
+            <button id="bgclear">Remove picture</button>
+          </div>
+          <span class="hint" id="bginfo"></span>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section id="tab-console" hidden>
-    <div class="panel">
+    <div class="panel screenonly">
+      <h2>No serial console on this board</h2>
+      <p class="hint" style="margin:0">The watch's only USB-C port is the controller port, so it has no console. Its status, USB tree and live tester are on its own web page: <code>http://diva-bridge.local/</code> (the IP is also shown on the watch screen).</p>
+    </div>
+    <div class="panel noscreen">
       <h2>Status</h2>
       <div class="row" style="margin-bottom:8px">
         <button id="refresh">Refresh</button>
@@ -171,11 +200,11 @@
       </div>
       <table class="kv" id="statustable"></table>
     </div>
-    <div class="panel">
+    <div class="panel noscreen">
       <h2>USB devices</h2>
       <div id="usbtree" class="tree"><span class="hint">—</span></div>
     </div>
-    <div class="panel">
+    <div class="panel noscreen">
       <h2>Command</h2>
       <div class="row">
         <input id="cmd" placeholder="e.g. help, status, set slider position, save" style="flex:1">
@@ -192,6 +221,12 @@
   </div>
 </main>
 
+<style>
+  .bgrow { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .bgprev { width: 205px; height: auto; border-radius: 22px; border: 3px solid #0b0b0e; outline: 1px solid var(--line); cursor: grab; touch-action: none; }
+  .bgctl { flex: 1; min-width: 220px; }
+  .bgctl input[type=range] { padding: 0; width: 100%; }
+</style>
 <script type="module">
 import { ESPLoader, Transport } from "https://cdn.jsdelivr.net/npm/esptool-js@0.6.1/bundle.js";
 
@@ -200,6 +235,8 @@ const FIRMWARE = /*FIRMWARE_JSON*/{"version": "dev", "commit": "", "boards": {}}
 
 const CFG_OFFSET = 0x310000;   // "divacfg" in partitions.csv
 const CFG_SIZE = 0x1000;
+const BG_OFFSET = 0x320000;    // "bgimage" in partitions.csv (screen boards)
+/*BGIMAGE_JS*/
 const BOARD_INFO = {
   esp32s3_devkit: {
     title: "ESP32-S3 DevKit (two USB ports)",
@@ -219,10 +256,20 @@ const BOARD_INFO = {
       "Flashing: if it doesn't respond, hold <b>BOOT</b>, tap <b>RST</b>, release BOOT and connect again.",
     ],
   },
+  esp32s3_amoled_206: {
+    title: "Waveshare ESP32-S3 AMOLED 2.06\" (watch)",
+    blurb: "Touch screen + battery, one USB-C (controller port), custom background",
+    screen: true,
+    steps: [
+      "Unplug the watch. Hold its <b>BOOT</b> side button while plugging its USB-C into this computer, then let go.",
+      "Click <b>Connect</b> and pick the port (USB JTAG/serial debug unit). Its screen stays dark while it's in flashing mode.",
+      "After writing, unplug it and plug in the controller through a powered USB-C hub. Change settings later on its web page, or come back here the same way.",
+    ],
+  },
 };
 
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["ssid", "pass", "port", "radio", "name", "xbox", "slider", "otg_power"];
+const FIELDS = ["ssid", "pass", "port", "radio", "name", "xbox", "slider", "otg_power", "brightness", "screen_timeout"];
 const FLAGS = ["slider_reverse", "led_reverse", "leds"];
 let board = null, port = null, mode = null;      // mode: null | "flash" | "console"
 let transport = null, loader = null;             // flash mode
@@ -343,6 +390,9 @@ function selectBoard(k) {
   }
   $("steps").innerHTML = BOARD_INFO[k].steps.map((s) => `<li>${s}</li>`).join("");
   for (const el of document.querySelectorAll(".otgonly")) el.style.display = k === "esp32s3_usb_otg" ? "" : "none";
+  const screen = !!BOARD_INFO[k].screen;
+  for (const el of document.querySelectorAll(".screenonly")) el.style.display = screen ? "" : "none";
+  for (const el of document.querySelectorAll(".noscreen")) el.style.display = screen ? "none" : "";
   updateButtons();
 }
 
@@ -352,6 +402,8 @@ function updateButtons() {
   for (const id of ["install", "update"]) $(id).disabled = busy || !haveFw;
   for (const id of ["read", "writecfg"]) $(id).disabled = busy;
   for (const id of ["refresh", "send", "cmd"]) $(id).disabled = busy;
+  $("bgwrite").disabled = busy || !BGIMG.img;
+  $("bgclear").disabled = busy;
   $("disconnect").hidden = !mode;
   $("dot").className = "dot" + (mode === "flash" ? " on" : mode === "console" ? " console" : "");
 }
@@ -546,9 +598,10 @@ async function readSettings(quiet) {
   log("Read settings from the board.", "ok");
 }
 
-async function write(kind) {   // "install" | "update" | "settings"
-  const err = kind !== "update" ? validate() : null;
-  const out = kind === "settings" ? $("cfginfo") : $("result");
+async function write(kind) {   // "install" | "update" | "settings" | "bg" | "bgclear"
+  const bgOnly = kind === "bg" || kind === "bgclear";
+  const err = kind !== "update" && !bgOnly ? validate() : null;
+  const out = bgOnly ? $("bginfo") : kind === "settings" ? $("cfginfo") : $("result");
   if (err) { out.innerHTML = `<span class="bad">${err}</span>`; return; }
   setBusy(true);
   out.textContent = "";
@@ -556,10 +609,16 @@ async function write(kind) {   // "install" | "update" | "settings"
   try {
     await ensureMode("flash");
     const files = [];
-    if (kind !== "settings") {
+    const screen = !!BOARD_INFO[board].screen;
+    if (kind === "install" || kind === "update") {
       for (const part of FIRMWARE.boards[board].parts) files.push({ address: part.offset, data: b64(part.data), name: part.name });
     }
-    if (kind !== "update" || $("eraseall").checked) {
+    if (screen && BGIMG.img && (kind === "bg" || (kind === "install" && $("bginstall").checked))) {
+      files.push({ address: BG_OFFSET, data: bgEncode(), name: "background picture" });
+    } else if (kind === "bgclear") {
+      files.push({ address: BG_OFFSET, data: new Uint8Array(0x1000).fill(0xFF), name: "background (cleared)" });
+    }
+    if (!bgOnly && (kind !== "update" || $("eraseall").checked)) {
       lastSerial = newSerial();
       files.push({ address: CFG_OFFSET, data: encodeBlob(formText(), lastSerial), name: "settings" });
     }
@@ -576,13 +635,21 @@ async function write(kind) {   // "install" | "update" | "settings"
     });
     $("prog").value = 1;
     log("Done. Restarting the board…", "ok");
-    out.innerHTML = '<span class="ok">Done.</span> The board restarts with ' + (kind === "update" ? "the new firmware." : "these settings.");
-    if (kind !== "settings") showBoardVersion(FIRMWARE.version);
+    out.innerHTML = '<span class="ok">Done.</span> The board restarts with ' +
+      (kind === "update" ? "the new firmware." : kind === "bg" ? "the new picture." : kind === "bgclear" ? "the default background." : "these settings.");
+    if (kind === "install" || kind === "update") showBoardVersion(FIRMWARE.version);
     $("unpair").checked = false;
     const wifi = $("ssid").value.trim() !== "" && $("radio").value !== "ble";
     await closeCurrent(true);
     setBusy(false);
-    await watchBoot(wifi);
+    if (screen) {
+      // No serial console on the watch: its USB port becomes the controller port.
+      $("wifiresult").hidden = false;
+      $("wifiresult").innerHTML = '<span class="ok">Written.</span> Unplug the watch and plug the controller (via a powered hub) into it.' +
+        (wifi ? ' The screen shows its Wi-Fi address once it joins; its page is at <code>http://diva-bridge.local/</code>.' : "");
+    } else {
+      await watchBoot(wifi);
+    }
   } catch (e) {
     log("Failed: " + (e.message || e), "bad");
     out.innerHTML = '<span class="bad">Failed.</span> Check the cable and the steps above, then try again.';
@@ -611,6 +678,9 @@ $("disconnect").onclick = async () => { setBusy(true); await closeCurrent(true);
 $("install").onclick = () => write("install");
 $("update").onclick = () => write("update");
 $("writecfg").onclick = () => write("settings");
+$("bgwrite").onclick = () => write("bg");
+$("bgclear").onclick = () => write("bgclear");
+bgAttach($("bgfile"), $("bgprev"), $("bgdim"), () => updateButtons());
 $("read").onclick = async () => {
   setBusy(true);
   try { await ensureMode("flash"); await readSettings(false); }

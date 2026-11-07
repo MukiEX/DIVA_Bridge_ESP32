@@ -29,6 +29,8 @@ struct Values {
   bool leds = true;
   bool xboxOneS = false;          // XInput profile: Series X (default) or One S
   OtgPower otgPower = OtgPower::UsbDev;  // ESP32-S3-USB-OTG board only
+  uint8_t brightness = 200;       // screen boards: 1-255
+  uint16_t screenTimeout = 60;    // screen boards: dim after this many idle s (0 = never)
 };
 
 /** Load from NVS (defaults where nothing is stored). */

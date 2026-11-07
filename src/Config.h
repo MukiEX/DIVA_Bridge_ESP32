@@ -29,3 +29,9 @@
 #undef STATUS_LED_PIN
 #define STATUS_LED_PIN OTG_LED_GREEN_PIN
 #endif
+
+/**
+ * Waveshare ESP32-S3-Touch-AMOLED-2.06 (watch, build env "esp32s3_amoled_206"):
+ * 410x502 AMOLED status/tester screen (src/boards/WatchDisplay), battery
+ * gauge, one USB-C port (native USB = the controller port; no serial).
+ */

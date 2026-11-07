@@ -11,6 +11,8 @@
 #include "Settings.h"
 #include "WebPage.h"
 #include "Version.h"
+#include "boards/WatchDisplay.h"
+#include <esp_partition.h>
 
 using namespace diva;
 
@@ -73,16 +75,21 @@ void handleState() {
            "{\"present\":%s,\"kind\":%d,\"vid\":\"%04X\",\"pid\":\"%04X\",\"pressed\":%u,"
            "\"sensors\":%lu,\"ext\":%u,\"pkt\":\"%s\",\"reports\":%lu,\"native\":%d,"
            "\"tcp\":%d,\"ble\":%d,\"rssi\":%d,\"port\":%u,\"uptime\":%lu,\"heap\":%lu,"
-           "\"radio\":\"%s\",\"otg_board\":%s,",
+           "\"radio\":\"%s\",\"otg_board\":%s,\"screen\":%s,\"battery\":%d,\"charging\":%s,",
            present ? "true" : "false", p ? (int)p->kind : 0, vid, pid, d.pressed,
            (unsigned long)d.sensors, (unsigned)(pkt[24] | pkt[25] << 8), hex,
            (unsigned long)ControllerHost::reportCount(), DivaState::nativeClients(),
            NetBridge::clients(), BleBridge::connections(), (int)WiFi.RSSI(), s.port,
            (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap(), radioName(s.radio),
 #ifdef BOARD_ESP32_S3_USB_OTG
-           "true"
+           "true",
 #else
-           "false"
+           "false",
+#endif
+#ifdef BOARD_WS_AMOLED_206
+           "true", WatchDisplay::batteryPercent(), WatchDisplay::charging() ? "true" : "false"
+#else
+           "false", -1, "false"
 #endif
   );
   String body = head;
@@ -174,6 +181,49 @@ void handleLeds() {
   sendJson(200, ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"no controller\"}");
 }
 
+// Background image upload (screen boards): the page posts the finished
+// "DVBG" blob (header + 410x502 RGB565) as one file field; it is streamed
+// straight into the "bgimage" partition.
+const esp_partition_t *bgPart = nullptr;
+size_t bgWritten = 0;
+bool bgOk = false;
+
+void handleBgUpload() {
+  HTTPUpload &up = server->upload();
+  if (up.status == UPLOAD_FILE_START) {
+    bgPart = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "bgimage");
+    bgWritten = 0;
+    bgOk = bgPart && esp_partition_erase_range(bgPart, 0, bgPart->size) == ESP_OK;
+  } else if (up.status == UPLOAD_FILE_WRITE && bgOk) {
+    if (bgWritten + up.currentSize > bgPart->size ||
+        esp_partition_write(bgPart, bgWritten, up.buf, up.currentSize) != ESP_OK)
+      bgOk = false;
+    bgWritten += up.currentSize;
+  }
+}
+
+void handleBgDone() {
+  if (!bgOk || bgWritten < 12) {
+    sendJson(400, "{\"ok\":false,\"error\":\"upload failed\"}");
+    return;
+  }
+  Serial.printf("[Web] background image written (%u bytes)\n", (unsigned)bgWritten);
+#ifdef BOARD_WS_AMOLED_206
+  WatchDisplay::reloadBackground();
+#endif
+  sendJson(200, "{\"ok\":true}");
+}
+
+void handleBgClear() {
+  const esp_partition_t *p =
+      esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "bgimage");
+  bool ok = p && esp_partition_erase_range(p, 0, 0x1000) == ESP_OK;
+#ifdef BOARD_WS_AMOLED_206
+  if (ok) WatchDisplay::reloadBackground();
+#endif
+  sendJson(ok ? 200 : 500, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+}
+
 void serverTask(void *) {
   while (true) {
     server->handleClient();
@@ -192,6 +242,8 @@ void begin() {
   server->on("/api/settings", HTTP_GET, handleGetSettings);
   server->on("/api/settings", HTTP_POST, handlePostSettings);
   server->on("/api/leds", HTTP_POST, handleLeds);
+  server->on("/api/background", HTTP_POST, handleBgDone, handleBgUpload);
+  server->on("/api/background", HTTP_DELETE, handleBgClear);
   server->onNotFound([] { server->send(404, "text/plain", "not found"); });
   server->begin();
   xTaskCreatePinnedToCore(serverTask, "web", 6144, nullptr, 1, nullptr, 1);

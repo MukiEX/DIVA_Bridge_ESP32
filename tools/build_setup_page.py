@@ -2,7 +2,7 @@
 """Build the standalone setup page (install / settings / console): embeds the
 firmware images into tools/setup_page/DIVA_Bridge_ESP32_Setup.template.html.
 
-After `pio run -e esp32s3_devkit -e esp32s3_usb_otg`:
+After `pio run -e esp32s3_devkit -e esp32s3_usb_otg -e esp32s3_amoled_206`:
 
     python3 tools/build_setup_page.py
 
@@ -18,7 +18,8 @@ import argparse, base64, glob, json, os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE = os.path.join(ROOT, "tools", "setup_page", "DIVA_Bridge_ESP32_Setup.template.html")
-ENVS = ["esp32s3_devkit", "esp32s3_usb_otg"]
+ENVS = ["esp32s3_devkit", "esp32s3_usb_otg", "esp32s3_amoled_206"]
+SCREEN_ENVS = {"esp32s3_amoled_206"}   # need the "bgimage" partition
 # ESP32-S3 Arduino layout; must match partitions.csv.
 OFFSETS = {"bootloader": 0x0, "partitions": 0x8000, "boot_app0": 0xE000, "app": 0x10000}
 CFG_OFFSET, APP_MAX = 0x310000, 0x300000
@@ -81,10 +82,13 @@ def main():
         # The partition table must contain divacfg where the page writes it.
         if b"divacfg" not in open(pt, "rb").read():
             sys.exit(f"{env}: partition table has no divacfg - build with partitions.csv")
+        if env in SCREEN_ENVS and b"bgimage" not in open(pt, "rb").read():
+            sys.exit(f"{env}: partition table has no bgimage - build with partitions.csv")
         fw["boards"][env] = {"parts": parts}
         print(f"{env}: app {os.path.getsize(app)} bytes")
 
     html = open(TEMPLATE, encoding="utf-8").read()
+    html = html.replace("/*BGIMAGE_JS*/", open(os.path.join(ROOT, "web", "bgimage.js"), encoding="utf-8").read())
     start, end = "/*FIRMWARE_JSON*/", "/*END_FIRMWARE_JSON*/"
     i, j = html.index(start) + len(start), html.index(end)
     html = html[:i] + json.dumps(fw, separators=(",", ":")) + html[j:]

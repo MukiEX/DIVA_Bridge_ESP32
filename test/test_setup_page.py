@@ -182,6 +182,40 @@ with sync_playwright() as p:
         assert fl(0x10000, len(app)) == app and decode(fl(0x310000, 0x1000))[1]["otg_power"] == "battery"
         print("otg board OK")
 
+    # 7b. Watch board: screen settings, background picture (scaled/cropped), no console
+    if "esp32s3_amoled_206" in boards:
+        from PIL import Image
+        img_path = os.path.join(tempfile.gettempdir(), "bg_test.png")
+        im = Image.new("RGB", (1200, 600), (255, 0, 0))          # wide: left half red, right half blue
+        im.paste((0, 0, 255), (600, 0, 1200, 600)); im.save(img_path)
+        pg.click("text=Waveshare ESP32-S3 AMOLED"); pg.click("[data-tab=settings]")
+        assert pg.is_visible("#brightness") and pg.is_visible("#bgprev") and not pg.is_visible("#otg_power")
+        pg.select_option("#screen_timeout", "300")
+        pg.set_input_files("#bgfile", img_path)
+        pg.wait_for_function("!document.getElementById('bgwrite').disabled")
+        pg.fill("#bgdim", "0"); pg.dispatch_event("#bgdim", "input")
+        pg.click("[data-tab=console]")
+        assert pg.is_visible("text=No serial console on this board") and not pg.is_visible("#usbtree")
+        pg.click("[data-tab=install]"); n = js("window.__fake.writes.length")
+        pg.click("#install"); pg.wait_for_function(f"window.__fake.writes.length === {n + 1}")
+        w = js("window.__fake.writes.at(-1)")
+        assert {"address": 0x320000, "len": 12 + 410 * 502 * 2} in w, w
+        hdr = fl(0x320000, 12)
+        assert hdr[:4] == b"DVBG" and int.from_bytes(hdr[4:6], "little") == 410 and int.from_bytes(hdr[6:8], "little") == 502
+        px = lambda x, y: int.from_bytes(fl(0x320000 + 12 + (y * 410 + x) * 2, 2), "little")
+        # 1200x600 covered onto 410x502 and centred: the middle column is the red/blue edge
+        assert px(10, 250) == 0xF800 and px(400, 250) == 0x001F, (hex(px(10, 250)), hex(px(400, 250)))
+        assert decode(fl(0x310000, 0x1000))[1]["screen_timeout"] == "300"
+        pg.wait_for_function("document.getElementById('wifiresult').textContent.includes('Unplug the watch')")
+        # picture only, then remove
+        pg.click("[data-tab=settings]"); n = js("window.__fake.writes.length")
+        pg.click("#bgwrite"); pg.wait_for_function(f"window.__fake.writes.length === {n + 1}")
+        assert js("window.__fake.writes.at(-1)") == [{"address": 0x320000, "len": 12 + 410 * 502 * 2}]
+        pg.click("#bgclear"); pg.wait_for_function(f"window.__fake.writes.length === {n + 2}")
+        assert js("window.__fake.writes.at(-1)") == [{"address": 0x320000, "len": 0x1000}] and fl(0x320000, 4) == b"\xff" * 4
+        pg.screenshot(path=os.path.join(tempfile.gettempdir(), "setup_watch.png"), full_page=True)
+        print("watch board OK")
+
     # 8. Encoder vs firmware decoder on awkward text
     blob = js("Array.from(window.__blob.encodeBlob('ssid=Caf\\u00e9 \\u2615 Net\\npass=\\nname=x\\n', 4294967295))")
     s, kv = decode(bytes(blob))
