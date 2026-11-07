@@ -351,6 +351,8 @@ function showState() {
     ["Bluetooth", `${st.btname} — ${st.ble} connected`],
     ["Games (native)", `${st.native} (${st.tcp} over Wi-Fi)`],
     ["Reports", `${st.reports} total, ${rate.toFixed(0)}/s`],
+    ["Presses counted", st.presses],
+    ["Bluetooth link to bridge", st.ble_interval ? `${st.ble_interval} ms interval · ${st.ble_sent} sent, ${st.ble_failed} retried` : "—"],
     ["Uptime", upStr],
     ["Free memory", `${Math.round(st.heap / 1024)} KB`],
     ["Firmware", `v${st.fw} (built ${st.built})`],

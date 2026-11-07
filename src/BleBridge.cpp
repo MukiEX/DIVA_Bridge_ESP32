@@ -17,6 +17,9 @@ namespace BleBridge {
 namespace {
 
 constexpr int MAX_NATIVE = 4;
+// INPUT value: 24-byte packet, 2 bytes extended buttons, 2 bytes press
+// counter (LE) so the bridge can tell whether any press went missing.
+constexpr size_t INPUT_LEN = EXT_PACKET_LEN + 2;
 constexpr uint32_t MIN_SEND_MS = 4;        // don't flood the BLE queue
 constexpr uint32_t MOTION_HOLD_MS = 60;    // stick held after a swipe step
 constexpr int16_t STICK_MAX = 32767;
@@ -29,6 +32,10 @@ NimBLECharacteristic *chControl = nullptr;
 NimBLECharacteristic *chInput = nullptr;
 NimBLECharacteristic *chLeds = nullptr;
 XboxGamepadDevice *pad = nullptr;
+struct {
+  uint32_t sent = 0, failed = 0;
+  uint16_t intervalUnits = 0;  // of the first native connection, 1.25 ms units
+} stats;
 TaskHandle_t outTask = nullptr;
 
 // Connections that did the handshake.
@@ -121,8 +128,11 @@ class InputCallbacks : public NimBLECharacteristicCallbacks {
     if (sub == 0) removeNative(info.getConnHandle());
   }
   void onRead(NimBLECharacteristic *c, NimBLEConnInfo &) override {
-    uint8_t buf[EXT_PACKET_LEN];
+    uint8_t buf[INPUT_LEN] = {};
     if (!DivaState::readExt(buf)) idlePacket(buf), buf[24] = buf[25] = 0;
+    uint16_t n = DivaState::pressCount();
+    buf[26] = n & 0xFF;
+    buf[27] = n >> 8;
     c->setValue(buf, sizeof(buf));
   }
 };
@@ -145,7 +155,7 @@ class DivaHid : public BleCompositeHID {
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY, 16);
     chInput = svc->createCharacteristic(
         DIVA_BLE_INPUT_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY,
-        EXT_PACKET_LEN);
+        INPUT_LEN);
     chLeds = svc->createCharacteristic(
         DIVA_BLE_LEDS_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR,
         MAX_DEVICE_OUT);
@@ -258,6 +268,18 @@ void housekeeping() {
   portEXIT_CRITICAL(&nmux);
   for (int i = 0; i < n; i++) removeNative(stale[i]);
 
+  // Track the connection interval the host actually granted.
+  uint16_t first = BLE_HS_CONN_HANDLE_NONE;
+  portENTER_CRITICAL(&nmux);
+  if (nativeCount) first = nativeConns[0];
+  portEXIT_CRITICAL(&nmux);
+  uint16_t units = 0;
+  if (first != BLE_HS_CONN_HANDLE_NONE) units = srv->getPeerInfoByHandle(first).getConnInterval();
+  if (units != stats.intervalUnits) {
+    stats.intervalUnits = units;
+    if (units) Serial.printf("[BLE] bridge connection interval: %.2f ms\n", units * 1.25f);
+  }
+
   static size_t lastPeers = 0;
   if (peers.size() > lastPeers) {
     // New central: ask for the shortest interval (the host decides).
@@ -281,6 +303,8 @@ void outputLoop(void *) {
   uint8_t lastStatus[8] = {};
   bool wasNative = false, padDirty = true, nativeDirty = true, padWasUp = false;
   uint8_t pkt[EXT_PACKET_LEN];
+  uint8_t npkt[INPUT_LEN];
+  int slot = DivaState::latchOpen();  // presses between notifications aren't lost
   while (true) {
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MIN_SEND_MS));
     uint32_t now = millis();
@@ -312,9 +336,22 @@ void outputLoop(void *) {
       pkt[24] = pkt[25] = 0;
     }
     if (nativeDirty && nativeCount > 0) {
-      chInput->setValue(pkt, EXT_PACKET_LEN);
-      chInput->notify();
-      nativeDirty = false;
+      if (!DivaState::readExtLatched(slot, npkt)) {
+        idlePacket(npkt);
+        npkt[24] = npkt[25] = 0;
+      }
+      uint16_t n = DivaState::pressCount();
+      npkt[26] = n & 0xFF;
+      npkt[27] = n >> 8;
+      chInput->setValue(npkt, INPUT_LEN);
+      if (chInput->notify()) {
+        stats.sent++;
+        nativeDirty = false;
+      } else {
+        // No buffer free (link busy): keep the presses and retry next tick.
+        stats.failed++;
+        DivaState::latchRestore(slot, npkt, PACKET_LEN, npkt[24] | npkt[25] << 8);
+      }
       lastSend = now;
     }
 
@@ -360,6 +397,10 @@ void begin() {
   xTaskCreatePinnedToCore(outputLoop, "ble_out", 6144, nullptr, 3, &outTask, 1);
   DivaState::setInputListener(outTask);
 }
+
+float intervalMs() { return stats.intervalUnits * 1.25f; }
+uint32_t notifySent() { return stats.sent; }
+uint32_t notifyFailed() { return stats.failed; }
 
 int connections() {
   NimBLEServer *srv = s_server();

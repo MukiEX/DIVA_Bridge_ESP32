@@ -50,6 +50,16 @@ try:
     assert d == want_pkt[:24], (d.hex(), want_pkt.hex())
     h = req(s, b"X\x84\x1a", 2); d = rx(s, h[1])
     assert d == want_pkt[:24] + want_ext.to_bytes(2, "little"), d.hex()
+    # A tap between two polls (press + release, no poll in between) is
+    # latched: the next poll shows it pressed once, the one after released.
+    idle = bytes([0x00, 0x00, 0x08, 0x80, 0x80, 0x80, 0x80, 0x00])
+    tap = bytes([0x01, 0x00, 0x08, 0x80, 0x80, 0x80, 0x80, 0x00])  # Y = square
+    ctl(idle.hex()); req(s, b"R\x84\x18", 2) and None; rx(s, 24)
+    ctl(tap.hex()); ctl(idle.hex())
+    h = req(s, b"R\x84\x18", 2); d = rx(s, h[1]); assert d[3] & (1 << 2), "tap lost between polls: " + d.hex()
+    h = req(s, b"R\x84\x18", 2); d = rx(s, h[1]); assert not d[3] & (1 << 2), "tap stuck: " + d.hex()
+    h = req(s, b"X\x84\x1a", 2); rx(s, h[1])
+    ctl(report.hex())
     # 'R' with a short max, as the protocol allows
     h = req(s, b"R\x84\x05", 2); d = rx(s, h[1]); assert d == want_pkt[:5]
     # LEDs accepted while plugged

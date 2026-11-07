@@ -91,6 +91,12 @@ void handleState() {
   body += "\"host\":" + jsonStr(NetBridge::hostName()) + ",";
   body += "\"ssid\":" + jsonStr(s.ssid) + ",";
   body += "\"btname\":" + jsonStr(s.name) + ",";
+  char extra[160];
+  snprintf(extra, sizeof(extra),
+           "\"presses\":%u,\"ble_interval\":%.2f,\"ble_sent\":%lu,\"ble_failed\":%lu,",
+           DivaState::pressCount(), BleBridge::intervalMs(), (unsigned long)BleBridge::notifySent(),
+           (unsigned long)BleBridge::notifyFailed());
+  body += extra;
   body += "\"fw\":" + jsonStr(DIVA_BRIDGE_VERSION) + ",";
   body += "\"built\":" + jsonStr(__DATE__ " " __TIME__) + "}";
   sendJson(200, body);

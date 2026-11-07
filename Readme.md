@@ -149,7 +149,9 @@ Pair the board with the PC first. The bridge connects alongside the system's gam
 ## Latency notes
 
 - Wi-Fi and Bluetooth share one radio. With both on, ESP-IDF requires Wi-Fi modem sleep, which adds jitter to Wi-Fi round trips. If you only use Wi-Fi native mode, `set radio wifi` keeps Wi-Fi fully awake. That also turns off the Xbox pad.
-- Bluetooth asks for a 7.5 ms connection interval. The host decides what it actually gets.
+- Bluetooth asks for a 7.5 ms connection interval. The host decides what it actually gets; the log and the board's Status tab show the interval granted.
+- **No lost taps.** Each reader has its own *press latch*: a Wi-Fi client between two polls, or the Bluetooth sender between two notifications. A press that starts and ends in between still shows up once. A notification that can't be sent is retried with its presses kept. Over Bluetooth, state also arrives in bursts once per connection event, so a tap's press and release can land microseconds apart. `diva_bridge.py --device ble` therefore keeps every press visible for at least 20 ms (`--ble-min-hold`), so the game, which reads the state once a frame, always sees it.
+- **Measuring it:** the ESP32 counts every press, and the count travels with each Bluetooth update. Every 30 s, `diva_bridge.py` logs `BLE link: N updates/s, longest gap X ms; presses A of B (lost L); short taps held H`. `lost` above 0 means presses never reached the PC. `short taps held` counts taps that would have been missed without the minimum hold.
 - If the board can't join Wi-Fi, the serial log says why (`network not found`, `wrong password`, …), and the setup page shows that after a write.
 - Every USB attach and detach is logged (`[USB] attached: …`, hubs included), so a hub that never shows up is easy to spot.
 - A Wi-Fi client that sends nothing for 5 s is dropped, so a sleeping PC doesn't keep the Xbox pad muted. A Bluetooth client stops being native when it unsubscribes from INPUT or disconnects.

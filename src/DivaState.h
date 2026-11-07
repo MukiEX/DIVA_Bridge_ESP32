@@ -55,6 +55,26 @@ uint32_t inputSeq();
 /** Task to wake (xTaskNotifyGive) when input or controller changes. */
 void setInputListener(TaskHandle_t task);
 
+// -------------------------------------------------------- press latches
+// A reader that samples the state now and then (a TCP client between polls,
+// the BLE sender between notifications) must not lose a press that starts
+// and ends in between. Each reader opens a latch slot; every input report is
+// OR-ed into all open slots (buttons, slider cells and extended buttons -
+// bytes 3..9 and ext), and a latched read returns current state OR the
+// latch, then resets it.
+constexpr int NO_SLOT = -1;
+int latchOpen();
+void latchClose(int slot);
+/** Like readPacket/readExt, but with the slot's latched presses OR-ed in.
+ * The slot restarts from the current state. */
+bool readPacketLatched(int slot, uint8_t *out, size_t max, size_t &len);
+bool readExtLatched(int slot, uint8_t out[diva::EXT_PACKET_LEN]);
+/** Put a latched packet back (its send failed), so nothing is lost. */
+void latchRestore(int slot, const uint8_t *pkt, size_t len, uint16_t ext);
+
+/** Button press edges seen so far (Divaller buttons + extended), wraps. */
+uint16_t pressCount();
+
 // ------------------------------------------------------------ native mode
 /** A client completed the handshake; the gamepad goes quiet while any are. */
 void nativeAcquire(const char *who);

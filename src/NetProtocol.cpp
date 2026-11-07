@@ -45,6 +45,8 @@ void serve(int s, const char *who) {
   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
   bool native = false;
+  // Our own latch: a press between two of this client's polls still shows up.
+  int slot = DivaState::latchOpen();
   uint8_t buf[2 + 256];
   while (true) {
     uint8_t op;
@@ -66,10 +68,10 @@ void serve(int s, const char *who) {
       size_t max = req[1], len = 0;
       bool ok;
       if (op == 'R') {
-        ok = DivaState::readPacket(buf + 2, max, len);
+        ok = DivaState::readPacketLatched(slot, buf + 2, max, len);
       } else {
         uint8_t ext[EXT_PACKET_LEN];
-        ok = DivaState::readExt(ext);
+        ok = DivaState::readExtLatched(slot, ext);
         len = max < EXT_PACKET_LEN ? max : EXT_PACKET_LEN;
         memcpy(buf + 2, ext, len);
       }
@@ -85,6 +87,7 @@ void serve(int s, const char *who) {
       if (!sendAll(s, &st, 1)) break;
     }
   }
+  DivaState::latchClose(slot);
   if (native) DivaState::nativeRelease("TCP");
 }
 
