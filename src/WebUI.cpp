@@ -96,7 +96,26 @@ void handleState() {
   sendJson(200, body);
 }
 
-void handleUsb() { sendJson(200, "{\"devices\":" + ControllerHost::usbTreeJson() + "}"); }
+const char *resetReason() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power on";
+    case ESP_RST_SW: return "restart (settings / command)";
+    case ESP_RST_PANIC: return "CRASH (panic)";
+    case ESP_RST_INT_WDT: return "CRASH (interrupt watchdog)";
+    case ESP_RST_TASK_WDT: return "CRASH (task watchdog)";
+    case ESP_RST_WDT: return "CRASH (watchdog)";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (power dipped)";
+    case ESP_RST_USB: return "USB reset";
+    case ESP_RST_EXT: return "reset pin";
+    case ESP_RST_DEEPSLEEP: return "deep sleep";
+    default: return "other";
+  }
+}
+
+void handleUsb() {
+  sendJson(200, "{\"devices\":" + ControllerHost::usbTreeJson() + ",\"port\":" +
+                    jsonStr(ControllerHost::portStatus()) + ",\"reset\":" + jsonStr(resetReason()) + "}");
+}
 
 void handleGetSettings() {
   String lines = Settings::toLines(false), body = "{";

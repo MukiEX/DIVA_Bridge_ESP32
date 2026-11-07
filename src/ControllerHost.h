@@ -24,6 +24,10 @@ String describe();
  * port), port, vid, pid, cls, speed, product, mfr, role. */
 String usbTreeJson();
 
+/** The OTG root port's hardware state, e.g. "powered, device connected,
+ * enabled, full speed, lines D+=1 D-=0". */
+String portStatus();
+
 /** IN reports received since boot. */
 uint32_t reportCount();
 

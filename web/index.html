@@ -378,6 +378,7 @@ async function poll() {
 
 // --------------------------------------------------------------- USB tree
 function esc(t) { return String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+let usbPort = "", usbReset = "";
 function renderUsb(devs) {
   const kids = (parent) => devs.filter((d) => d.parent === parent).sort((a, b) => a.port - b.port);
   const node = (d) => {
@@ -394,12 +395,15 @@ function renderUsb(devs) {
   const root = kids(0);
   $("usbtree").innerHTML = `<ul><li><span class="node"><span class="name">ESP32-S3 USB OTG port</span></span>` +
     (root.length ? `<ul>${root.map(node).join("")}</ul>`
-      : `<ul><li class="empty">Nothing attached. If a hub is plugged in and its lights are on, it's probably waiting for 5&nbsp;V on its upstream port: bridge the board's <b>USB-OTG</b> jumper, or try the controller directly.</li></ul>`) +
-    "</li></ul>";
+      : `<ul><li class="empty">${usbPort.includes("device connected")
+          ? "Something is electrically connected but didn't enumerate. Check the serial log for <code>[USB]</code> lines."
+          : "Nothing electrically connected (neither data line is pulled up). Check the cable and that it's in the board's native USB port; if it's a hub, it may be waiting for 5&nbsp;V upstream (<b>USB-OTG</b> jumper)."}</li></ul>`) +
+    "</li></ul>" +
+    `<p class="hint">Port: ${esc(usbPort || "—")} · last reset: ${esc(usbReset || "—")}</p>`;
 }
 async function pollUsb() {
   if (!$("tab-status").hidden) {
-    try { renderUsb((await (await fetch("/api/usb", { cache: "no-store" })).json()).devices); } catch (e) {}
+    try { const j = await (await fetch("/api/usb", { cache: "no-store" })).json(); usbPort = j.port || ""; usbReset = j.reset || ""; renderUsb(j.devices); } catch (e) {}
   }
   setTimeout(pollUsb, 2000);
 }
@@ -496,7 +500,7 @@ for (const b of document.querySelectorAll(".tabs button")) {
     for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
     for (const t of ["tester", "status", "settings"]) $("tab-" + t).hidden = t !== b.dataset.tab;
     if (b.dataset.tab === "settings" && !settingsLoaded) loadSettings();
-    if (b.dataset.tab === "status") fetch("/api/usb").then((r) => r.json()).then((j) => renderUsb(j.devices)).catch(() => {});
+    if (b.dataset.tab === "status") fetch("/api/usb").then((r) => r.json()).then((j) => { usbPort = j.port || ""; usbReset = j.reset || ""; renderUsb(j.devices); }).catch(() => {});
   };
 }
 draw(null);

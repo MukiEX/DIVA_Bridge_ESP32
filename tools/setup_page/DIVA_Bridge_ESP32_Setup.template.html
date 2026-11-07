@@ -472,7 +472,8 @@ function showStatus(lines) {
   if (kv.version) showBoardVersion(kv.version);
   const rows = [["Firmware", kv.version && `v${kv.version}`], ["Controller", kv.controller], ["Reports", kv.reports],
     ["Wi-Fi", kv.wifi], ["Games over Wi-Fi", kv.tcp_clients], ["Bluetooth", kv.ble], ["Native clients", kv.native_clients],
-    ["Free memory", kv.free_heap && `${Math.round(kv.free_heap / 1024)} KB`]];
+    ["Free memory", kv.free_heap && `${Math.round(kv.free_heap / 1024)} KB`],
+    ["USB port", kv.usb_port], ["Last reset", kv.reset_reason && ({1: "power on", 3: "restart", 4: "CRASH (panic)", 5: "CRASH (interrupt watchdog)", 6: "CRASH (task watchdog)", 7: "CRASH (watchdog)", 9: "BROWNOUT", 2: "reset pin"}[kv.reset_reason] || `code ${kv.reset_reason}`)]];
   $("statustable").innerHTML = rows.filter(([, v]) => v !== undefined)
     .map(([k, v]) => `<tr><td>${k}</td><td>${esc(v)}</td></tr>`).join("");
   $("statusinfo").textContent = "Updated " + new Date().toLocaleTimeString();

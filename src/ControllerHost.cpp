@@ -5,6 +5,7 @@
 #include <atomic>
 #include <usb/usb_helpers.h>
 #include <usb/usb_host.h>
+#include <soc/usb_dwc_struct.h>
 
 #include "DivaState.h"
 
@@ -444,10 +445,38 @@ void scanTree() {
   portEXIT_CRITICAL(&treeMux);
 }
 
+// ------------------------------------------------------------- diagnostics
+/** Called by the stack for every device it enumerates (after it has read the
+ * device descriptor), so a device that later fails still shows up here. */
+bool enumFilter(const usb_device_desc_t *d, uint8_t *config) {
+  Serial.printf("[USB] enumerating %04X:%04X (class 0x%02x, USB %x.%02x, EP0 %u bytes)\n", d->idVendor,
+                d->idProduct, d->bDeviceClass, d->bcdUSB >> 8, d->bcdUSB & 0xFF, d->bMaxPacketSize0);
+  return true;  // enumerate everything (keeps the default configuration)
+}
+
+/** The OTG root port's hardware state (DWC HPRT register). */
+String portStatusText(uint32_t v) {
+  usb_dwc_hprt_reg_t h;
+  h.val = v;
+  String s = h.prtpwr ? "powered" : "NOT powered";
+  s += h.prtconnsts ? ", device connected" : ", nothing connected";
+  if (h.prtconnsts) {
+    s += h.prtena ? ", enabled" : ", not enabled";
+    s += h.prtspd == 1 ? ", full speed" : h.prtspd == 2 ? ", low speed" : h.prtspd == 0 ? ", high speed?" : "";
+  }
+  if (h.prtovrcurract) s += ", OVER-CURRENT";
+  // Line state: bit 0 = D+, bit 1 = D- (a device pulls one of them high).
+  s += String(", lines D+") + (h.prtlnsts & 1 ? "=1" : "=0") + " D-" + (h.prtlnsts & 2 ? "=1" : "=0");
+  return s;
+}
+uint32_t readHprt() { return USB_DWC.hprt_reg.val; }
+const uint32_t HPRT_MASK = 0x0003FDF5;  // ignore the write-1-to-clear change bits
+
 void libTask(void *arg) {
   usb_host_config_t cfg = {};
   cfg.skip_phy_setup = false;
   cfg.intr_flags = ESP_INTR_FLAG_LEVEL1;
+  cfg.enum_filter_cb = enumFilter;
   ESP_ERROR_CHECK(usb_host_install(&cfg));
   xTaskNotifyGive((TaskHandle_t)arg);
   while (true) {
@@ -476,6 +505,12 @@ void clientLoop(void *) {
       uint8_t addr = pendingNew[pendingNewCount - 1];
       pendingNewCount--;
       openDevice(addr);
+    }
+    static uint32_t lastPort = 0xFFFFFFFF;
+    uint32_t port = readHprt() & HPRT_MASK;
+    if (port != lastPort) {
+      lastPort = port;
+      Serial.printf("[USB] OTG port: %s\n", portStatusText(port).c_str());
     }
     static uint32_t lastScan = 0;
     if (rescan || millis() - lastScan > 2000) {
@@ -537,6 +572,8 @@ String describe() {
 }
 
 uint32_t reportCount() { return reports; }
+
+String portStatus() { return portStatusText(readHprt()); }
 
 String usbTreeJson() {
   UsbNode copy[MAX_NODES];

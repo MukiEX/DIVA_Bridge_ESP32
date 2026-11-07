@@ -37,6 +37,8 @@ static void printStatus() {
                                 : (String(BleBridge::connections()) + " connected").c_str());
   Serial.printf("native_clients=%d\n", DivaState::nativeClients());
   Serial.printf("free_heap=%lu\n", (unsigned long)ESP.getFreeHeap());
+  Serial.printf("usb_port=%s\n", ControllerHost::portStatus().c_str());
+  Serial.printf("reset_reason=%d\n", (int)esp_reset_reason());
   Serial.printf("usb=%s\n", ControllerHost::usbTreeJson().c_str());
   Serial.println("--- end ---");
 }
