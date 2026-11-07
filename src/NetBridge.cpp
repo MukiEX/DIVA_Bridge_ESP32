@@ -8,6 +8,7 @@
 
 #include "DivaState.h"
 #include "NetProtocol.h"
+#include "WebUI.h"
 #include "Settings.h"
 
 using namespace diva;
@@ -21,6 +22,8 @@ std::atomic<int> clientCount{0};
 bool enabled = false;
 bool mdnsUp = false;
 
+}  // namespace
+
 String hostName() {
   // "DIVA Bridge" -> "diva-bridge" (mDNS: diva-bridge.local)
   String h;
@@ -31,6 +34,8 @@ String hostName() {
   while (h.endsWith("-")) h.remove(h.length() - 1);
   return h.length() ? h : String("diva-bridge");
 }
+
+namespace {
 
 void clientTask(void *arg) {
   int s = (int)(intptr_t)arg;
@@ -82,20 +87,42 @@ void serverTask(void *) {
   }
 }
 
-void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t) {
+void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      Serial.printf("[Net] Wi-Fi connected: %s  (set DivallerBridge.ini host=%s or %s.local)\n",
+      Serial.printf("[Net] Wi-Fi connected: %s  (set DivallerBridge.ini host=%s or %s.local; "
+                    "tester at http://%s/)\n",
                     WiFi.localIP().toString().c_str(), WiFi.localIP().toString().c_str(),
-                    hostName().c_str());
+                    hostName().c_str(), WiFi.localIP().toString().c_str());
       if (!mdnsUp && MDNS.begin(hostName().c_str())) {
         MDNS.addService("divabridge", "tcp", Settings::get().port);
+        MDNS.addService("http", "tcp", 80);
         mdnsUp = true;
       }
       break;
-    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      // The Arduino core reconnects by itself (setAutoReconnect).
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+      // The Arduino core reconnects by itself (setAutoReconnect); say why once
+      // per reason so the log (and the web flasher) can tell what's wrong.
+      static uint8_t lastReason = 0;
+      uint8_t reason = info.wifi_sta_disconnected.reason;
+      if (reason != lastReason) {
+        lastReason = reason;
+        const char *why = "disconnected";
+        switch (reason) {
+          case WIFI_REASON_NO_AP_FOUND: why = "network not found"; break;
+          case WIFI_REASON_AUTH_FAIL:
+          case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+          case WIFI_REASON_HANDSHAKE_TIMEOUT:
+          case WIFI_REASON_MIC_FAILURE: why = "wrong password"; break;
+          case WIFI_REASON_ASSOC_FAIL:
+          case WIFI_REASON_AUTH_EXPIRE: why = "the router refused it"; break;
+          default: break;
+        }
+        Serial.printf("[Net] Wi-Fi: can't join '%s': %s (reason %u) - retrying\n",
+                      Settings::get().ssid.c_str(), why, reason);
+      }
       break;
+    }
     default:
       break;
   }
@@ -124,6 +151,7 @@ void begin() {
   WiFi.begin(s.ssid.c_str(), s.pass.c_str());
   Serial.printf("[Net] connecting to '%s'...\n", s.ssid.c_str());
   xTaskCreatePinnedToCore(serverTask, "net_server", 4096, nullptr, 3, nullptr, 1);
+  WebUI::begin();
 }
 
 String describe() {

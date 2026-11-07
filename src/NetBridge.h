@@ -26,6 +26,9 @@ void begin();
 /** "connected 192.168.1.50", "connecting to <ssid>", "off", ... */
 String describe();
 
+/** mDNS / DHCP host name, e.g. "diva-bridge". */
+String hostName();
+
 /** Connected TCP clients. */
 int clients();
 

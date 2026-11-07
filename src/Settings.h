@@ -41,6 +41,16 @@ bool consumeUnpair();
 /** Feed serial input; handles complete lines. Call from loop(). */
 void poll();
 
+/** Current settings as "key=value" lines (password blank unless asked). */
+String toLines(bool withPassword);
+bool passwordSet();
+
+/** Apply "key=value" lines and store them; nothing changes on error. */
+bool applyAndSave(const String &text, String &error);
+
+/** Restart from poll() after `ms` (lets a web reply go out first). */
+void restartSoon(uint32_t ms);
+
 /** Called by the console to print live status (set up in main). */
 void setStatusPrinter(void (*fn)());
 

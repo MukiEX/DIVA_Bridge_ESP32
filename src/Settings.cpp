@@ -111,7 +111,7 @@ bool setKey(const String &key, const String &value, bool quiet = false) {
   else if (key == "name") ok = value.length() > 0 && value.length() <= 28 && (vals.name = value, true);
   else if (key == "port") {
     long p = value.toInt();
-    ok = p > 0 && p < 65536;
+    ok = p > 0 && p < 65536 && p != 80;  // 80 is the web page
     if (ok) vals.port = p;
   } else if (key == "radio") {
     if (value == "both") vals.radio = Radio::Both;
@@ -192,6 +192,40 @@ void mirrorToPartition() {
   free(blob);
 }
 
+/** Apply "key=value" lines (flasher blob / web page). "unpair=1" queues a
+ * pairing reset for the next boot. Applies every valid line; false + error
+ * names the first bad one. */
+bool applyText(const String &text, String &error) {
+  int start = 0;
+  bool allOk = true;
+  while (start < (int)text.length()) {
+    int end = text.indexOf('\n', start);
+    if (end < 0) end = text.length();
+    String l = text.substring(start, end);
+    start = end + 1;
+    if (l.endsWith("\r")) l.remove(l.length() - 1);
+    int eq = l.indexOf('=');
+    if (eq <= 0) continue;
+    String key = l.substring(0, eq), value = l.substring(eq + 1);
+    key.trim();
+    key.toLowerCase();
+    if (key == "unpair") {
+      if (value == "1") {
+        prefs.begin("divabridge", false);
+        prefs.putBool("unpair", true);
+        prefs.end();
+      }
+      continue;
+    }
+    if (key != "ssid" && key != "pass" && key != "password" && key != "name") value.trim();
+    if (!setKey(key, value, true) && allOk) {
+      allOk = false;
+      error = "bad value for " + key;
+    }
+  }
+  return allOk;
+}
+
 /** Apply a blob the flasher wrote, once. */
 void applyFromPartition() {
   const esp_partition_t *part = cfgPartition();
@@ -216,30 +250,10 @@ void applyFromPartition() {
   }
   if (serial != applied) {
     Serial.println("[Settings] applying settings from the web flasher");
-    String text(payload, len);
-    int start = 0;
-    bool unpair = false;
-    while (start < (int)text.length()) {
-      int end = text.indexOf('\n', start);
-      if (end < 0) end = text.length();
-      String l = text.substring(start, end);
-      start = end + 1;
-      if (l.endsWith("\r")) l.remove(l.length() - 1);
-      int eq = l.indexOf('=');
-      if (eq <= 0) continue;
-      String key = l.substring(0, eq), value = l.substring(eq + 1);
-      key.trim();
-      key.toLowerCase();
-      if (key == "unpair") {
-        unpair = value == "1";
-        continue;
-      }
-      if (key != "ssid" && key != "pass" && key != "password" && key != "name") value.trim();
-      setKey(key, value, true);
-    }
+    String error;
+    applyText(String(payload, len), error);
     prefs.begin("divabridge", false);
     prefs.putULong("cfg_serial", serial);
-    if (unpair) prefs.putBool("unpair", true);
     prefs.end();
     save();  // stores NVS and rewrites the blob (normalised, without unpair)
   }
@@ -292,6 +306,8 @@ void handle(String cmd) {
 }
 }  // namespace
 
+uint32_t restartAt = 0;
+
 void begin() {
   load();
   applyFromPartition();
@@ -300,6 +316,7 @@ void begin() {
 Values &get() { return vals; }
 
 void poll() {
+  if (restartAt && (int32_t)(millis() - restartAt) >= 0) ESP.restart();
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\r' || c == '\n') {
@@ -320,5 +337,32 @@ bool consumeUnpair() {
   prefs.end();
   return f;
 }
+
+}  // namespace Settings
+
+namespace Settings {
+
+String toLines(bool withPassword) {
+  String s = settingsLines();
+  if (!withPassword) {
+    int i = s.indexOf("pass="), e = s.indexOf('\n', i);
+    s = s.substring(0, i) + "pass=" + s.substring(e);
+  }
+  return s;
+}
+
+bool passwordSet() { return vals.pass.length() > 0; }
+
+bool applyAndSave(const String &text, String &error) {
+  Values backup = vals;
+  if (!applyText(text, error)) {
+    vals = backup;  // all or nothing for the web page
+    return false;
+  }
+  save();
+  return true;
+}
+
+void restartSoon(uint32_t ms) { restartAt = millis() + ms; if (!restartAt) restartAt = 1; }
 
 }  // namespace Settings

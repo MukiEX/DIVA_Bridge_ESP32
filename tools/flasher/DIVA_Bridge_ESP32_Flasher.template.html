@@ -54,6 +54,9 @@
   .bad { color: var(--red); }
   .ok { color: var(--green); }
   code { color: var(--cyan); }
+  .banner { margin-top: 10px; padding: 9px 12px; border-radius: 8px; background: #1b2a2e; color: #d8f6fa;
+            border: 1px solid #2b6e78; font-size: 13.5px; }
+  .banner a { color: var(--cyan); }
   .pw { display: flex; gap: 6px; }
   .pw input { flex: 1; }
   .pw button { padding: 6px 10px; }
@@ -127,6 +130,7 @@
     <div class="check" style="margin-top:10px"><input type="checkbox" id="eraseall"><label for="eraseall">Erase the whole flash first (clears pairings and everything else)</label></div>
     <div style="margin-top:12px"><progress id="prog" value="0" max="1"></progress></div>
     <div id="result" class="hint"></div>
+    <div id="wifiresult" class="banner" hidden></div>
     <pre id="log"></pre>
   </div>
 </main>
@@ -284,10 +288,71 @@ function setConnected(text) {
   setBusy(false);
 }
 
-async function disconnect() {
+async function disconnect(reset = true) {
+  // Leave the board running its firmware, not sitting in flashing mode.
+  if (reset && loader) { try { await loader.after("hard_reset"); } catch (e) {} }
   try { if (transport) await transport.disconnect(); } catch (e) {}
   transport = loader = null;
   setConnected();
+}
+
+/** After a write: reopen the port as a plain serial monitor and wait for the
+ * firmware to report Wi-Fi. Only works where the flashing port is also the
+ * log port (DevKit COM port, USB-OTG board's micro-USB). */
+async function watchBoot(port, expectWifi) {
+  const box = $("wifiresult");
+  box.hidden = false;
+  box.innerHTML = expectWifi ? "Waiting for the board to join Wi-Fi…" : "Waiting for the board to start…";
+  let reader = null, done = false;
+  const show = (html) => { box.innerHTML = html; };
+  const timer = setTimeout(() => {
+    if (done) return;
+    done = true;
+    show(expectWifi
+      ? '<span class="warn">No Wi-Fi report within 25 s.</span> It may still be connecting: look for <b>diva-bridge</b> in your router, or open the Setup page on this port and type <code>status</code>.'
+      : "Board restarted.");
+    try { reader && reader.cancel(); } catch (e) {}
+  }, 25000);
+  try {
+    await new Promise((r) => setTimeout(r, 300));
+    await port.open({ baudRate: 115200 });
+    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
+    reader = port.readable.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (!done) {
+      const { value, done: end } = await reader.read();
+      if (end) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).replace(/\r$/, ""); buf = buf.slice(i + 1);
+        if (line.startsWith("[")) log(line);
+        let m;
+        if ((m = line.match(/\[Net\] Wi-Fi connected: (\S+)/))) {
+          const ip = m[1];
+          const host = (line.match(/or (\S+\.local)/) || [])[1] || "diva-bridge.local";
+          show(`<span class="ok">Connected to Wi-Fi.</span> Address <code>${ip}</code> (also <code>${host}</code>).<br>` +
+               `Tester &amp; settings: <a href="http://${ip}/" target="_blank" rel="noopener">http://${ip}/</a> · ` +
+               `DivallerBridge.ini: <code>host=${ip}</code>`);
+          done = true;
+        } else if ((m = line.match(/\[Net\] Wi-Fi: can't join '(.*)': (.*?) \(reason/))) {
+          show(`<span class="bad">Can't join “${m[1].replace(/</g, "&lt;")}”: ${m[2]}.</span> Fix it above and use <b>Write settings only</b>. (It keeps retrying meanwhile.)`);
+          done = true;
+        } else if (line.includes("[Net] no Wi-Fi network set") || line.includes("[Net] Wi-Fi off")) {
+          show("Board started (no Wi-Fi set, Bluetooth only).");
+          done = true;
+        }
+      }
+    }
+  } catch (e) {
+    if (!done) show("Board restarted. (Couldn’t watch its log on this port: on single-USB boards the port turns into the controller port. Find it as <b>diva-bridge</b> in your router or at <code>diva-bridge.local</code>.)");
+    done = true;
+  } finally {
+    clearTimeout(timer);
+    try { reader && reader.releaseLock(); } catch (e) {}
+    try { await port.close(); } catch (e) {}
+  }
 }
 
 $("connect").onclick = async () => {
@@ -370,12 +435,14 @@ async function write(mode) {
     });
     $("prog").value = 1;
     log("Done. Restarting the board…", "ok");
-    await loader.after("hard_reset");
     $("result").innerHTML = '<span class="ok">Done.</span> The board restarts and applies the settings. ' +
-      'If it doesn’t start, unplug it and plug it back in. Its address shows up in your router, ' +
-      'or as <code>' + ($("name").value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "diva-bridge") + '.local</code>.';
+      'If it doesn’t start, unplug it and plug it back in. The tester and settings page is at the board’s address, ' +
+      'or <code>http://' + ($("name").value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "diva-bridge") + '.local/</code>.';
     $("unpair").checked = false;
-    await disconnect();
+    const port = transport.device;
+    const wifi = $("ssid").value.trim() !== "" && $("radio").value !== "ble";
+    await disconnect(true);
+    watchBoot(port, wifi);
   } catch (e) {
     log("Write failed: " + (e.message || e), "bad");
     $("result").innerHTML = '<span class="bad">Write failed.</span> Check the cable and the steps above, then connect again.';

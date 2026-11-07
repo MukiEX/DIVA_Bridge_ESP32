@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DIVA Bridge</title>
+<style>
+  :root {
+    --bg: #15161b; --panel: #23252d; --line: #33363f; --text: #d8d8de;
+    --dim: #6b6e7a; --cyan: #3fd7ea; --green: #4fd06a; --red: #f05050; --amber: #f2c84b; --pink: #e45dd0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px 16px 40px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
+  h1 span { color: var(--cyan); }
+  .tabs { display: flex; gap: 6px; margin-left: auto; }
+  .tabs button { background: none; border: 1px solid transparent; color: var(--dim); }
+  .tabs button.on { color: var(--text); border-color: var(--line); background: var(--panel); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+          background: var(--bg); border: 1px solid var(--line); font-size: 13px; white-space: nowrap; }
+  .chip b { font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dot.ok { background: var(--green); } .dot.warn { background: var(--amber); } .dot.bad { background: var(--red); }
+  canvas { width: 100%; height: auto; display: block; }
+  .banner { margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: #1b2a2e; color: #bff7ff;
+            border: 1px solid #2b6e78; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 170px 1fr; gap: 8px 12px; align-items: center; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .grid > label { margin-top: 6px; } .tabs { margin-left: 0; } }
+  label { color: var(--dim); }
+  input, select { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+                  border-radius: 6px; padding: 7px 9px; font: inherit; }
+  input:focus, select:focus { outline: 1px solid var(--cyan); border-color: var(--cyan); }
+  .check { display: flex; gap: 8px; align-items: center; }
+  .check input { width: auto; } .check label { color: var(--text); }
+  button { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+           padding: 8px 14px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--cyan); }
+  button.primary { background: var(--cyan); color: #0b1a1d; border-color: var(--cyan); font-weight: 600; }
+  button.on { border-color: var(--cyan); color: var(--cyan); }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .hint { color: var(--dim); font-size: 12.5px; margin: 8px 0 0; }
+  table.kv { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.kv td { padding: 5px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.kv td:first-child { color: var(--dim); width: 170px; padding-right: 12px; }
+  code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  code { color: var(--cyan); }
+  .pw { display: flex; gap: 6px; } .pw input { flex: 1; } .pw button { padding: 6px 10px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>DIVA Bridge <span>ESP32</span></h1>
+    <span class="hint" id="hostline" style="margin:0"></span>
+    <nav class="tabs">
+      <button data-tab="tester" class="on">Tester</button>
+      <button data-tab="status">Status</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+  </header>
+
+  <div class="panel">
+    <div class="chips">
+      <span class="chip"><span class="dot" id="d-ctl"></span><span id="c-ctl">Controller: —</span></span>
+      <span class="chip"><span class="dot" id="d-game"></span><span id="c-game">Games: —</span></span>
+      <span class="chip"><span class="dot" id="d-pad"></span><span id="c-pad">Xbox pad: —</span></span>
+      <span class="chip"><span id="c-rate">— reports/s</span></span>
+      <span class="chip"><span class="dot" id="d-link"></span><span id="c-link">Live</span></span>
+    </div>
+  </div>
+
+  <section id="tab-tester">
+    <div class="panel">
+      <canvas id="cv" width="920" height="400"></canvas>
+      <div class="banner" id="nativebanner" hidden>A game is connected through the bridge, so the Bluetooth Xbox pad is muted. The tester keeps showing the controller either way.</div>
+    </div>
+    <div class="panel" id="ledpanel">
+      <h2>Slider LEDs</h2>
+      <div class="row">
+        <button data-led="touch">Light where touched</button>
+        <button data-led="rainbow">Rainbow</button>
+        <button data-led="white">White</button>
+        <button data-led="off">Off</button>
+        <div class="check" style="margin-left:6px"><input type="checkbox" id="btnleds" checked><label for="btnleds">Button LEDs (Divaller)</label></div>
+      </div>
+      <p class="hint" id="ledhint">Sends LED packets like a game would. Stops when you leave this page or pick another mode. A running game overrides it.</p>
+    </div>
+    <div class="panel">
+      <h2>Raw</h2>
+      <div class="mono" id="raw">—</div>
+    </div>
+  </section>
+
+  <section id="tab-status" hidden>
+    <div class="panel">
+      <h2>Connect a game</h2>
+      <table class="kv">
+        <tr><td>PD-Loader (DivallerBridge.ini)</td><td><code id="ini">—</code></td></tr>
+        <tr><td>BridgeSlider (config.toml)</td><td><code id="toml">—</code></td></tr>
+        <tr><td>Bluetooth</td><td>Pair <b id="btname">—</b> as a controller, or run <code>diva_bridge.py --device ble</code></td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>Device</h2>
+      <table class="kv" id="statustable"></table>
+    </div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <div class="panel">
+      <h2>Settings</h2>
+      <div class="grid">
+        <label for="ssid">Wi-Fi network</label><input id="ssid" autocomplete="off">
+        <label for="pass">Wi-Fi password</label>
+        <div class="pw"><input id="pass" type="password" autocomplete="new-password" placeholder="unchanged"><button id="showpw" type="button">Show</button></div>
+        <label for="port">Bridge port</label><input id="port" type="number" min="1" max="65535">
+        <label for="radio">Radios</label>
+        <select id="radio">
+          <option value="both">Wi-Fi + Bluetooth</option>
+          <option value="wifi">Wi-Fi only (lowest Wi-Fi latency, no Xbox pad)</option>
+          <option value="ble">Bluetooth only (this page goes away)</option>
+        </select>
+        <label for="name">Bluetooth name</label><input id="name" maxlength="28">
+        <label for="xbox">Pad profile</label>
+        <select id="xbox"><option value="seriesx">Xbox Series X</option><option value="ones">Xbox One S</option></select>
+        <label for="slider">Slider on the pad</label>
+        <select id="slider">
+          <option value="motion">Swipes push the sticks (left half → LS, right half → RS)</option>
+          <option value="position">Touch position on the sticks</option>
+          <option value="off">Off</option>
+        </select>
+        <label>Options</label>
+        <div>
+          <div class="check"><input type="checkbox" id="slider_reverse"><label for="slider_reverse">Reverse slider direction</label></div>
+          <div class="check"><input type="checkbox" id="led_reverse"><label for="led_reverse">Reverse slider LEDs (ZhouSensor)</label></div>
+          <div class="check"><input type="checkbox" id="leds"><label for="leds">Send LEDs to the controller</label></div>
+          <div class="check"><input type="checkbox" id="unpair"><label for="unpair">Forget Bluetooth pairings</label></div>
+        </div>
+        <label for="otg_power" class="otgonly">Host port power</label>
+        <select id="otg_power" class="otgonly"><option value="usb">From the USB_DEV plug</option><option value="battery">From the battery</option></select>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="save">Save &amp; restart</button>
+        <span class="hint" id="saveinfo" style="margin:0"></span>
+      </div>
+      <p class="hint">Changing the network or the name can move the board to a different address. It reconnects within a few seconds of restarting.</p>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const BG = "#15161b", PANEL = "#23252d", TEXT = "#d8d8de", DIM = "#6b6e7a", CYAN = "#3fd7ea";
+const FACE = [["triangle", "Triangle", "#4fd06a"], ["square", "Square", "#e45dd0"],
+              ["cross", "Cross", "#5a8cff"], ["circle", "Circle", "#f05050"]];
+// Button bits as in the firmware (diva::Button): fn square circle triangle cross l3 l2 l1
+const BTN = { fn: 0, square: 1, circle: 2, triangle: 3, cross: 4, l3: 5, l2: 6, l1: 7 };
+const EXT = { up: 1, down: 2, left: 4, right: 8, lb: 16, rb: 32, lt: 64, rt: 128, ls: 256, rs: 512 };
+const PROFILES = {
+  "Divaller": [{ fn: "FN", l1: "L1", l2: "L2", l3: "L3" }, null],
+  "ZhouSensor HDD": [{ fn: "+", l1: "−", l2: "◉", l3: "⌂" }, { lb: "L", rb: "R", lt: "ZL", rt: "ZR", ls: "LS", rs: "RS" }],
+  "HORI NSW-230": [{ fn: "+", l1: "−", l2: "◉", l3: "⌂" }, { lb: "L", rb: "R", lt: "ZL", rt: "ZR", ls: "LS", rs: "RS" }],
+  "HORI PS4-161": [{ fn: "OPT", l1: "SHR", l2: "TP", l3: "PS" }, { lb: "L1", rb: "R1", lt: "L2", rt: "R2", ls: "L3", rs: "R3" }],
+};
+const HORI = ["HORI NSW-230", "HORI PS4-161"];
+
+// --------------------------------------------------------------- drawing
+const cv = $("cv"), g = cv.getContext("2d");
+const W = 920, H = 400;
+function fitCanvas() {  // draw at the screen's pixel density so it stays sharp
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function mix(c1, c2, t) {
+  const a = [1, 3, 5].map((i) => parseInt(c1.substr(i, 2), 16)), b = [1, 3, 5].map((i) => parseInt(c2.substr(i, 2), 16));
+  return "#" + a.map((x, i) => Math.round(x + (b[i] - x) * t).toString(16).padStart(2, "0")).join("");
+}
+function rrect(x0, y0, x1, y1, r, fill, stroke, lw) {
+  g.beginPath(); g.roundRect(x0, y0, x1 - x0, y1 - y0, r);
+  if (fill) { g.fillStyle = fill; g.fill(); }
+  if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw || 1; g.stroke(); }
+}
+function text(x, y, s, color, font, align) {
+  g.fillStyle = color; g.font = font || "12px system-ui, sans-serif";
+  g.textAlign = align || "center"; g.textBaseline = "middle"; g.fillText(s, x, y);
+}
+function symbol(key, cx, cy, size, color, width) {
+  g.strokeStyle = color; g.lineWidth = width; g.lineJoin = "round"; g.lineCap = "round"; g.beginPath();
+  if (key === "triangle") {
+    const h = size * 0.95;
+    g.moveTo(cx, cy - h * 0.62); g.lineTo(cx - size * 0.62, cy + h * 0.42); g.lineTo(cx + size * 0.62, cy + h * 0.42); g.closePath();
+  } else if (key === "square") { const d = size * 0.5; g.rect(cx - d, cy - d, 2 * d, 2 * d); }
+  else if (key === "cross") { const d = size * 0.52; g.moveTo(cx - d, cy - d); g.lineTo(cx + d, cy + d); g.moveTo(cx - d, cy + d); g.lineTo(cx + d, cy - d); }
+  else { g.arc(cx, cy, size * 0.55, 0, Math.PI * 2); }
+  g.stroke();
+}
+function dpad(cx, cy, ext, arm, color) {
+  for (const [n, dx, dy] of [["up", 0, -1], ["down", 0, 1], ["left", -1, 0], ["right", 1, 0]]) {
+    const x = cx + dx * arm, y = cy + dy * arm;
+    g.fillStyle = ext & EXT[n] ? color : "#3a3c46"; g.fillRect(x - arm / 2, y - arm / 2, arm, arm);
+    g.strokeStyle = "#55586a"; g.lineWidth = 1; g.strokeRect(x - arm / 2, y - arm / 2, arm, arm);
+  }
+  g.fillStyle = "#3a3c46"; g.fillRect(cx - arm / 2, cy - arm / 2, arm, arm);
+}
+function pill(x, y, label, on, color) {
+  const w = Math.max(30, 9 * label.length + 14);
+  rrect(x, y, x + w, y + 22, 10, on ? color : "#30323c", on ? color : "#4a4d5a", 1);
+  text(x + w / 2, y + 11, label, on ? "#111" : TEXT, "bold 13px system-ui, sans-serif");
+  return w;
+}
+function draw(st) {
+  fitCanvas();
+  g.clearRect(0, 0, W, H);
+  if (!st || !st.present) {
+    text(W / 2, H / 2 - 12, st ? "No controller" : "Not connected to the board", TEXT, "bold 26px system-ui, sans-serif");
+    text(W / 2, H / 2 + 22, st ? "Plug in a Divaller, ZhouSensor (HDD mode), HORI NSW-230 or PS4-161 (arcade mode)"
+                              : "Waiting for the board…", DIM, "14px system-ui, sans-serif");
+    return;
+  }
+  const b = {}; for (const k in BTN) b[k] = (st.pressed >> BTN[k]) & 1;
+  const sensors = []; for (let i = 0; i < 32; i++) sensors.push((st.sensors >>> i) & 1);
+  (HORI.includes(st.name) ? drawHori : drawPanel)(st.name, b, sensors, st.ext);
+}
+function drawPanel(name, b, sensors, ext) {
+  const [small, extLabels] = PROFILES[name] || PROFILES["Divaller"];
+  rrect(14, 14, W - 14, H - 14, 22, PANEL, "#3a3d48", 2);
+  text(36, 40, name.toUpperCase(), TEXT, "bold 18px system-ui, sans-serif", "left");
+  let x = W - 40;
+  for (const [key, role] of [["fn", "start"], ["l3", "test"], ["l2", "service"], ["l1", "coin"]]) {
+    const label = small[key], w = Math.max(30, 9 * label.length + 14);
+    x -= w; pill(x, 28, label, b[key], key !== "fn" ? "#e45dd0" : "#f2c84b");
+    text(x + w / 2, 60, role, DIM, "10px system-ui, sans-serif"); x -= 14;
+  }
+  const sx0 = 40, sx1 = W - 40, sy = 86, cw = (sx1 - sx0) / 32;
+  rrect(sx0 - 8, sy - 8, sx1 + 8, sy + 48, 12, "#11141a", "#2b6e78", 2);
+  sensors.forEach((on, i) => { g.fillStyle = on ? CYAN : (i % 8 ? "#1e2a30" : "#26363d"); g.fillRect(sx0 + i * cw + 1, sy, cw - 2, 40); });
+  text(W / 2, sy + 62, `TOUCH SLIDER   ·   ${sensors.reduce((a, c) => a + c, 0)}/32 touched`, DIM, "11px system-ui, sans-serif");
+  const bw = 150, gap = 40, x0 = (W - (4 * bw + 3 * gap)) / 2;
+  FACE.forEach(([key, label, color], i) => {
+    const on = b[key], bx = x0 + i * (bw + gap);
+    rrect(bx, 170, bx + bw, 290, 24, on ? color : "#1a1c22", color, 3);
+    symbol(key, bx + bw / 2, 230, 34, on ? "#ffffff" : color, 5);
+    text(bx + bw / 2, 306, label, on ? TEXT : DIM, (on ? "bold " : "") + "13px system-ui, sans-serif");
+  });
+  if (extLabels) {
+    text(40, 350, "D-pad", DIM, "11px system-ui, sans-serif", "left");
+    dpad(110, 350, ext, 11, "#f2c84b");
+    let px = 150;
+    for (const k of ["lb", "rb", "lt", "rt", "ls", "rs"]) px += pill(px, 339, extLabels[k], ext & EXT[k], "#e45dd0") + 8;
+    text(W - 40, 350, "D-pad and shoulder buttons go to Mega Mix+ only", DIM, "10px system-ui, sans-serif", "right");
+  }
+}
+function drawHori(name, b, sensors, ext) {
+  const [small, extLabels] = PROFILES[name];
+  rrect(10, 18, W - 10, H - 8, 18, "#0b0b0e", "#2a2b31", 2);
+  rrect(60, 6, W - 60, 70, 10, "#1a1a1f", "#2f3037", 2);
+  g.fillStyle = "#081418"; g.fillRect(170, 18, 130, 38); g.strokeStyle = "#3a4a50"; g.lineWidth = 1; g.strokeRect(170, 18, 130, 38);
+  text(235, 30, name.replace("HORI ", ""), CYAN, "bold 14px system-ui, sans-serif");
+  text(235, 46, "ARCADE MODE", "#2b8c99", "10px system-ui, sans-serif");
+  for (const kx of [100, 132]) { g.beginPath(); g.ellipse(kx, 37, 11, 11, 0, 0, 7); g.fillStyle = "#101014"; g.fill(); g.strokeStyle = "#45464e"; g.lineWidth = 2; g.stroke(); }
+  dpad(345, 37, ext, 11, "#f2c84b");
+  const items = [[small.l1, b.l1], [small.fn, b.fn], [small.l3, b.l3], [small.l2, b.l2]]
+    .concat(["lb", "rb", "lt", "rt", "ls", "rs"].map((k) => [extLabels[k], ext & EXT[k]]));
+  let x = 400;
+  for (const [label, on] of items) {
+    g.beginPath(); g.arc(x, 30, 8, 0, 7); g.fillStyle = on ? "#f2c84b" : "#202128"; g.fill();
+    g.strokeStyle = on ? "#f2c84b" : "#4a4b55"; g.lineWidth = 2; g.stroke();
+    text(x, 52, label, on ? TEXT : DIM, "bold 10px system-ui, sans-serif"); x += 42;
+  }
+  const gx0 = 22, gx1 = W - 22, gy0 = 82, gy1 = 168;
+  const grad = g.createLinearGradient(0, gy0, 0, gy1); grad.addColorStop(0, "#1d5d6b"); grad.addColorStop(1, "#0c1c24");
+  g.fillStyle = grad; g.fillRect(gx0, gy0, gx1 - gx0, gy1 - gy0);
+  g.strokeStyle = "#7fe9f5"; g.lineWidth = 2; g.strokeRect(gx0, gy0, gx1 - gx0, gy1 - gy0);
+  g.strokeStyle = "#a9f3fb"; g.lineWidth = 1; g.beginPath(); g.moveTo(gx0 + 4, gy0 + 5); g.lineTo(gx1 - 4, gy0 + 5); g.stroke();
+  text(gx0 + 24, gy0 + 22, "◀", "#bff7ff", "bold 20px system-ui, sans-serif");
+  text(gx1 - 24, gy0 + 22, "▶", "#bff7ff", "bold 20px system-ui, sans-serif");
+  text(W / 2, gy0 + 22, "T O U C H        S L I D E R", "#9fe6ef", "15px system-ui, sans-serif");
+  const cx0 = gx0 + 46, cx1 = gx1 - 46, cy = gy0 + 46, cw = (cx1 - cx0) / 32;
+  sensors.forEach((on, i) => {
+    const x0 = cx0 + i * cw;
+    if (on) { g.fillStyle = "#ffffff"; g.fillRect(x0 + 1, cy - 4, cw - 2, 34); g.strokeStyle = "#bff7ff"; g.strokeRect(x0 + 1, cy - 4, cw - 2, 34); }
+    else { g.fillStyle = i % 8 ? "#3b8f9c" : "#5fc2cf"; g.fillRect(x0 + 1, cy + 22, cw - 2, 6); }
+  });
+  text(gx1 - 12, gy1 - 10, `${sensors.reduce((a, c) => a + c, 0)}/32`, "#9fe6ef", "10px system-ui, sans-serif", "right");
+  const r = 76, gap = 52; let bx = (W - (8 * r + 3 * gap)) / 2 + r; const by = 278;
+  for (const [key, , color] of FACE) {
+    const on = b[key];
+    if (on) { g.beginPath(); g.arc(bx, by, r + 10, 0, 7); g.fillStyle = mix(color, "#0b0b0e", 0.55); g.fill(); }
+    g.beginPath(); g.arc(bx, by, r, 0, 7); g.fillStyle = "#16171c"; g.fill(); g.strokeStyle = "#3b3c44"; g.lineWidth = 3; g.stroke();
+    g.beginPath(); g.arc(bx, by, r - 9, 0, 7); g.fillStyle = on ? color : mix(color, "#0b0b0e", 0.82); g.fill();
+    g.strokeStyle = color; g.lineWidth = 7; g.stroke();
+    symbol(key, bx, by, 36, on ? "#ffffff" : color, 7);
+    bx += 2 * r + gap;
+  }
+}
+
+// --------------------------------------------------------------- live state
+let st = null, lastReports = null, lastT = 0, rate = 0, failures = 0, settingsLoaded = false;
+function chip(id, cls, label) { $("d-" + id).className = "dot " + cls; $("c-" + id).textContent = label; }
+function hex(n, w) { return n.toString(16).toUpperCase().padStart(w, "0"); }
+function showState() {
+  draw(st);
+  if (!st) { chip("link", "bad", "Board unreachable"); return; }
+  chip("link", "ok", "Live");
+  chip("ctl", st.present ? "ok" : "warn", st.present ? `${st.name} (${st.vid}:${st.pid})` : "No controller");
+  chip("game", st.native ? "ok" : "", st.native ? `Games: ${st.native} connected` : "Games: none");
+  chip("pad", st.radio === "wifi" ? "" : st.ble ? (st.native ? "warn" : "ok") : "",
+       st.radio === "wifi" ? "Xbox pad: off" : st.ble ? (st.native ? "Xbox pad: muted" : `Xbox pad: ${st.ble} paired`) : "Xbox pad: not connected");
+  $("c-rate").textContent = `${rate.toFixed(0)} reports/s`;
+  $("nativebanner").hidden = !(st.native && st.ble);
+  $("raw").textContent = st.present ? `${st.pkt.match(/../g).join(" ")}   ext ${hex(st.ext, 4)}` : "—";
+  $("ledpanel").hidden = !(st.present && (st.kind === 1 || st.kind === 2));
+  $("btnleds").parentElement.hidden = st.kind !== 1;
+  const host = `${st.host}.local`;
+  $("hostline").textContent = `${st.ip} · ${host}`;
+  $("ini").textContent = `[bridge] host=${st.ip}  port=${st.port}   (or host=${host})`;
+  $("toml").textContent = `host = "${st.ip}"   port = ${st.port}`;
+  $("btname").textContent = st.btname;
+  const up = st.uptime, upStr = `${Math.floor(up / 3600)}h ${Math.floor(up / 60) % 60}m ${up % 60}s`;
+  const rows = [
+    ["Controller", st.present ? `${st.name} — ${st.vid}:${st.pid}` : "none"],
+    ["Wi-Fi", `${st.ssid} — ${st.ip}, ${st.rssi} dBm`],
+    ["Host name", host],
+    ["Bridge port", st.port],
+    ["Radios", { both: "Wi-Fi + Bluetooth", wifi: "Wi-Fi only", ble: "Bluetooth only" }[st.radio]],
+    ["Bluetooth", `${st.btname} — ${st.ble} connected`],
+    ["Games (native)", `${st.native} (${st.tcp} over Wi-Fi)`],
+    ["Reports", `${st.reports} total, ${rate.toFixed(0)}/s`],
+    ["Uptime", upStr],
+    ["Free memory", `${Math.round(st.heap / 1024)} KB`],
+    ["Firmware", st.fw],
+  ];
+  $("statustable").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v).replace(/</g, "&lt;")}</td></tr>`).join("");
+  for (const el of document.querySelectorAll(".otgonly")) el.hidden = !st.otg_board;
+}
+async function poll() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    st = await r.json();
+    const now = performance.now();
+    if (lastReports !== null && now > lastT) {
+      const inst = (st.reports - lastReports) * 1000 / (now - lastT);
+      rate = rate ? rate * 0.8 + inst * 0.2 : inst;
+    }
+    lastReports = st.reports; lastT = now; failures = 0;
+    ledTick();
+  } catch (e) {
+    if (++failures > 3) st = null;
+  }
+  showState();
+  setTimeout(poll, document.hidden ? 1000 : failures ? 1000 : 30);
+}
+
+// --------------------------------------------------------------- LED test
+let ledMode = null, ledBusy = false, ledPending = false, ledPhase = 0;
+function ledPacket() {
+  const p = new Uint8Array(100);
+  p.set([0x44, 0x4C, 0x61]);
+  p[3] = $("btnleds").checked ? 0x00 : 0xF0;   // button LEDs, inverted (0 = lit)
+  for (let n = 0; n < 32; n++) {
+    let r = 0, gg = 0, bb = 0;
+    if (ledMode === "white") r = gg = bb = 255;
+    else if (ledMode === "rainbow") {
+      const h = ((n / 32) + ledPhase) % 1, i = Math.floor(h * 6), f = h * 6 - i, q = 1 - f;
+      [r, gg, bb] = [[1, f, 0], [q, 1, 0], [0, 1, f], [0, q, 1], [f, 0, 1], [1, 0, q]][i].map((v) => Math.round(v * 255));
+    } else if (ledMode === "touch") {
+      const on = st && (st.sensors >>> n) & 1;
+      if (on) { r = 255; gg = 255; bb = 255; } else { r = 0; gg = 40; bb = 60; }
+    }
+    const o = 4 + 3 * (31 - n);
+    p[o] = gg; p[o + 1] = r; p[o + 2] = bb;
+  }
+  return p;
+}
+async function sendLeds() {
+  // One request at a time; the newest state always goes out last (so "Off" sticks).
+  if (ledBusy) { ledPending = true; return; }
+  ledBusy = true;
+  do {
+    ledPending = false;
+    try {
+      const p = ledPacket();
+      await fetch("/api/leds", { method: "POST", body: Array.from(p, (x) => x.toString(16).padStart(2, "0")).join("") });
+    } catch (e) {}
+  } while (ledPending);
+  ledBusy = false;
+}
+function ledTick() {
+  if (!ledMode) return;
+  ledPhase = (ledPhase + 0.01) % 1;
+  sendLeds();
+}
+for (const btn of document.querySelectorAll("[data-led]")) {
+  btn.onclick = () => {
+    ledMode = btn.dataset.led === "off" ? null : btn.dataset.led;   // null = all dark
+    for (const b of document.querySelectorAll("[data-led]")) b.classList.toggle("on", b === btn && ledMode);
+    sendLeds();
+  };
+}
+window.addEventListener("pagehide", () => {
+  if (ledMode) { ledMode = null; navigator.sendBeacon("/api/leds", Array.from(ledPacket(), (x) => x.toString(16).padStart(2, "0")).join("")); }
+});
+
+// --------------------------------------------------------------- settings
+const FIELDS = ["ssid", "port", "radio", "name", "xbox", "slider", "otg_power"];
+const FLAGS = ["slider_reverse", "led_reverse", "leds"];
+async function loadSettings() {
+  try {
+    const s = await (await fetch("/api/settings", { cache: "no-store" })).json();
+    for (const k of FIELDS) if (k in s) $(k).value = s[k];
+    for (const k of FLAGS) if (k in s) $(k).checked = s[k] === "1";
+    $("pass").value = ""; $("pass").placeholder = s.pass_set ? "unchanged (set)" : "none";
+    $("unpair").checked = false;
+    settingsLoaded = true;
+  } catch (e) { $("saveinfo").textContent = "Couldn't load settings."; }
+}
+$("save").onclick = async () => {
+  const port = Number($("port").value);
+  if (!(port > 0 && port < 65536) || port === 80) { $("saveinfo").textContent = "Port must be 1–65535 and not 80."; return; }
+  if (!$("name").value.trim()) { $("saveinfo").textContent = "Bluetooth name can't be empty."; return; }
+  const clean = (v) => String(v).replace(/[\r\n]/g, "");
+  let body = "";
+  for (const k of FIELDS) body += `${k}=${clean($(k).value)}\n`;
+  for (const k of FLAGS) body += `${k}=${$(k).checked ? 1 : 0}\n`;
+  if ($("pass").value) body += `pass=${clean($("pass").value)}\n`;
+  if ($("unpair").checked) body += "unpair=1\n";
+  $("save").disabled = true; $("saveinfo").textContent = "Saving…";
+  try {
+    const r = await fetch("/api/settings", { method: "POST", body });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || "rejected");
+    $("saveinfo").textContent = "Saved. Restarting…";
+    setTimeout(() => location.reload(), 6000);
+  } catch (e) {
+    $("saveinfo").textContent = "Not saved: " + e.message; $("save").disabled = false;
+  }
+};
+$("showpw").onclick = () => { const p = $("pass"); p.type = p.type === "password" ? "text" : "password"; $("showpw").textContent = p.type === "password" ? "Show" : "Hide"; };
+
+// --------------------------------------------------------------- tabs
+for (const b of document.querySelectorAll(".tabs button")) {
+  b.onclick = () => {
+    for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
+    for (const t of ["tester", "status", "settings"]) $("tab-" + t).hidden = t !== b.dataset.tab;
+    if (b.dataset.tab === "settings" && !settingsLoaded) loadSettings();
+  };
+}
+draw(null);
+poll();
+</script>
+</body>
+</html>

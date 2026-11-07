@@ -18,7 +18,7 @@ html = open(page_path, encoding="utf-8").read()
 fw = json.loads(re.search(r"/\*FIRMWARE_JSON\*/(.*?)/\*END_FIRMWARE_JSON\*/", html, re.S).group(1))
 
 FAKE = r"""
-export class Transport { constructor(port) { this.port = port; } async disconnect() { window.__fake.disconnects++; } }
+export class Transport { constructor(port) { this.device = port; } async disconnect() { window.__fake.disconnects++; } }
 export class ESPLoader {
   constructor(o) { this.o = o; window.__fake.loader = this; }
   async main() { this.o.terminal.writeLine("fake: chip ESP32-S3"); return "ESP32-S3 (QFN56) (revision v0.2)"; }
@@ -55,7 +55,22 @@ with sync_playwright() as p:
     pg.route(re.compile(r".*esptool-js.*"), lambda r: r.fulfill(body=FAKE, content_type="application/javascript"))
     pg.add_init_script("""
       window.__fake = { flash: new Uint8Array(0x400000).fill(0xFF), writes: [], resets: [], disconnects: 0 };
-      Object.defineProperty(navigator, 'serial', { value: { requestPort: async () => ({}) } });
+      // A port that, when reopened after flashing, plays the firmware's boot log.
+      const port = {
+        async open() { window.__fake.opens++; },
+        async setSignals() {},
+        async close() {},
+        get readable() {
+          const lines = window.__fake.bootLog;
+          return new ReadableStream({ start(c) {
+            for (const l of lines) c.enqueue(new TextEncoder().encode(l + String.fromCharCode(13, 10)));
+          } });
+        },
+      };
+      window.__fake.opens = 0;
+      window.__fake.bootLog = ["=== DIVA Bridge ESP32 ===", "[Net] connecting to 'Home Net 5G'...",
+        "[Net] Wi-Fi connected: 192.168.1.42  (set DivallerBridge.ini host=192.168.1.42 or diva-bridge.local; tester at http://192.168.1.42/)"];
+      Object.defineProperty(navigator, 'serial', { value: { requestPort: async () => port } });
     """)
     pg.goto("file://" + page_path)
     pg.wait_for_function("document.querySelectorAll('.board').length > 0")
@@ -76,7 +91,9 @@ with sync_playwright() as p:
     assert kv["radio"] == "wifi" and kv["led_reverse"] == "1" and kv["unpair"] == "1", kv
     assert kv["port"] == "45710" and kv["name"] == "DIVA Bridge", kv
     assert pg.evaluate("window.__fake.resets[0]") == "hard_reset"
-    print("install OK, serial", serial1)
+    pg.wait_for_function("document.getElementById('wifiresult').textContent.includes('192.168.1.42')")
+    assert "http://192.168.1.42/" in pg.inner_html("#wifiresult")
+    print("install OK, serial", serial1, "| wifi report:", pg.inner_text("#wifiresult").splitlines()[0])
 
     # 2. Board rewrote its own blob (as the firmware's mirror does): reconnect + read
     with tempfile.TemporaryDirectory() as d:
@@ -92,13 +109,22 @@ with sync_playwright() as p:
     assert pg.input_value("#pass") == "p@ss word=1"
 
     # 3. Settings only: only the 4 KB blob is written, with a new serial
+    pg.evaluate("""window.__fake.bootLog = ["[Net] connecting to 'Other'...",
+      "[Net] Wi-Fi: can't join 'Other': wrong password (reason 15) - retrying"]""")
     pg.fill("#ssid", "Other"); n_before = pg.evaluate("window.__fake.writes.length")
     pg.click("#writecfg"); pg.wait_for_function(f"window.__fake.writes.length === {n_before + 1}")
     w = pg.evaluate("window.__fake.writes.at(-1)")
     assert w == [{"address": 0x310000, "len": 0x1000}], w
     serial2, kv = decode(flash(pg, 0x310000, 0x1000))
     assert serial2 != serial1 and kv["ssid"] == "Other" and kv["slider"] == "position", (serial2, kv)
-    print("settings-only OK")
+    pg.wait_for_function("document.getElementById('wifiresult').textContent.includes('wrong password')")
+    print("settings-only OK | wifi report:", pg.inner_text("#wifiresult").splitlines()[0])
+
+    # 3b. Connect, only read, Disconnect -> the board is reset out of flashing mode
+    r0 = pg.evaluate("window.__fake.resets.length")
+    pg.click("#connect"); pg.wait_for_selector("#writecfg:not([disabled])")
+    pg.click("#connect"); pg.wait_for_function(f"window.__fake.resets.length === {r0 + 1}")
+    print("disconnect-reset OK")
 
     # 4. Firmware update keeps settings (no blob written)
     pg.click("#connect"); pg.wait_for_selector("#update:not([disabled])")

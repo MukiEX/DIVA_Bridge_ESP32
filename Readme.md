@@ -71,6 +71,16 @@ pio run -e esp32s3_devkit -e esp32s3_usb_otg
 python3 tools/build_flasher.py            # -> dist/DIVA_Bridge_ESP32_Flasher.html
 ```
 
+## On-device web page
+
+Once the board is on Wi-Fi, open **`http://diva-bridge.local/`**, or **`http://<its IP>/`**. The flasher shows the address after it writes. The page has three tabs:
+
+- **Tester:** the controller, drawn like the DIVA Bridge GUI, with the live slider, buttons, D-pad and shoulder buttons. It also shows the report rate, raw packets, and whether a game or the Xbox pad is active. An LED test lights the slider where touched, as a rainbow or in white, and also drives the Divaller's button LEDs.
+- **Status:** the exact `DivallerBridge.ini` and BridgeSlider lines for this board, plus the Wi-Fi, Bluetooth and client counts.
+- **Settings:** the same options as the flasher. Saving restarts the board.
+
+The page only reads the controller, so it doesn't count as a game and the Xbox pad stays on. It runs on port 80, and the bridge port can't be set to 80. The page source is `web/index.html`; run `python3 tools/gen_webpage.py` after editing it.
+
 ## Setup over USB serial (alternative)
 
 Open **`tools/DIVA_Bridge_ESP32_Setup.html`** in Chrome or Edge, click **Connect** and pick the board's COM port. Fill in your Wi-Fi and press **Save & restart**. The Status box then shows the board's address.
@@ -138,6 +148,7 @@ Pair the board with the PC first. The bridge connects alongside the system's gam
 
 - Wi-Fi and Bluetooth share one radio. With both on, ESP-IDF requires Wi-Fi modem sleep, which adds jitter to Wi-Fi round trips. If you only use Wi-Fi native mode, `set radio wifi` keeps Wi-Fi fully awake. That also turns off the Xbox pad.
 - Bluetooth asks for a 7.5 ms connection interval. The host decides what it actually gets.
+- If the board can't join Wi-Fi, the serial log says why (`network not found`, `wrong password`, …), and the flasher shows that after a write.
 - A Wi-Fi client that sends nothing for 5 s is dropped, so a sleeping PC doesn't keep the Xbox pad muted. A Bluetooth client stops being native when it unsubscribes from INPUT or disconnects.
 
 ## Protocol reference
@@ -172,6 +183,7 @@ g++ -std=c++17 -pthread -Ihost_shim -o net_server net_server.cpp \
 python3 test_net.py /path/to/DIVA_Bridge_project/diva_bridge.py        # TCP protocol, as the plugins use it
 g++ -std=c++17 -o config_cli config_cli.cpp ../src/ConfigBlob.cpp
 python3 test_flasher.py ../dist/DIVA_Bridge_ESP32_Flasher.html          # flasher vs. a simulated board (Playwright)
+python3 test_webui.py ../web/index.html /tmp/shots                     # on-device page vs. a mock API (Playwright)
 ```
 
 ## Source layout
@@ -183,6 +195,7 @@ python3 test_flasher.py ../dist/DIVA_Bridge_ESP32_Flasher.html          # flashe
 | `src/DivaState.*` | shared latest input / pending LEDs / native-client count |
 | `src/NetBridge.*`, `src/NetProtocol.*` | Wi-Fi, mDNS, TCP bridge server |
 | `src/BleBridge.*` | Xbox BLE pad + DIVA Bridge GATT service |
+| `src/WebUI.*`, `web/index.html` | port-80 tester / status / settings page (packed into `src/WebPage.h`) |
 | `src/Settings.*` | NVS settings, the serial console, the flasher's settings partition |
 | `src/ConfigBlob.*` | settings-partition format (shared with the flasher) |
 | `partitions.csv` | huge_app layout + `divacfg` |
