@@ -8,6 +8,7 @@
  *
  * API (used by the page):
  *   GET  /api/state     live JSON: controller, buttons, sensors, clients, Wi-Fi
+ *   GET  /api/usb       USB tree: every attached device, hubs included
  *   GET  /api/settings  JSON of the settings (password left out)
  *   POST /api/settings  "key=value" lines (same keys as the serial "set");
  *                       saves and restarts on success

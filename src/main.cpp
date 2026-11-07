@@ -23,9 +23,11 @@
 #include "DivaState.h"
 #include "NetBridge.h"
 #include "Settings.h"
+#include "Version.h"
 
 static void printStatus() {
   Serial.println("--- status ---");
+  Serial.println("version=" DIVA_BRIDGE_VERSION);
   Serial.printf("controller=%s\n", ControllerHost::describe().c_str());
   Serial.printf("reports=%lu\n", (unsigned long)ControllerHost::reportCount());
   Serial.printf("wifi=%s\n", NetBridge::describe().c_str());
@@ -35,6 +37,7 @@ static void printStatus() {
                                 : (String(BleBridge::connections()) + " connected").c_str());
   Serial.printf("native_clients=%d\n", DivaState::nativeClients());
   Serial.printf("free_heap=%lu\n", (unsigned long)ESP.getFreeHeap());
+  Serial.printf("usb=%s\n", ControllerHost::usbTreeJson().c_str());
   Serial.println("--- end ---");
 }
 
@@ -62,7 +65,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println();
-  Serial.println("=== DIVA Bridge ESP32 ===  (type 'help' for commands)");
+  Serial.println("=== DIVA Bridge ESP32 v" DIVA_BRIDGE_VERSION " ===  (type 'help' for commands)");
 
   Settings::begin();
   auto &s = Settings::get();

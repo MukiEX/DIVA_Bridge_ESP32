@@ -1,7 +1,7 @@
 .pio
 .vscode
-test/protocol_cli
 __pycache__/
-test/net_server
 dist/
 test/config_cli
+test/net_server
+test/protocol_cli

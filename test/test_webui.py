@@ -19,6 +19,8 @@ CTL = {  # name, kind, vid, pid
     "none": ("", 0, "0000", "0000"),
 }
 state = {"ctl": "divaller", "reports": 0}
+USB = [{"addr": 1, "parent": 0, "port": 0, "vid": "1A40", "pid": "0101", "cls": 9, "speed": "full", "product": "USB 2.0 Hub", "mfr": "", "role": "hub"},
+       {"addr": 2, "parent": 1, "port": 2, "vid": "0E8F", "pid": "2213", "cls": 0, "speed": "full", "product": "Divaller", "mfr": "DJ DAO", "role": "controller: Divaller"}]
 posts = {"leds": [], "settings": []}
 settings = {"ssid": "Home Net", "pass": "", "name": "DIVA Bridge", "port": "45710", "radio": "both",
             "slider": "motion", "slider_reverse": "0", "led_reverse": "0", "leds": "1", "xbox": "seriesx",
@@ -43,10 +45,12 @@ class H(BaseHTTPRequestHandler):
                     "reports": state["reports"], "native": 1, "tcp": 1, "ble": 1, "rssi": -48,
                     "port": 45710, "uptime": 3725, "heap": 180000, "radio": "both", "otg_board": False,
                     "name": name, "ip": "192.168.1.42", "host": "diva-bridge", "ssid": "Home Net",
-                    "btname": "DIVA Bridge", "fw": "Nov  6 2026 20:00:00"}
+                    "btname": "DIVA Bridge", "fw": "0.4.0", "built": "Nov  6 2026 20:00:00"}
             return self.send(200, json.dumps(body))
         if self.path == "/api/settings":
             return self.send(200, json.dumps(settings))
+        if self.path == "/api/usb":
+            return self.send(200, json.dumps({"devices": USB if state["ctl"] != "none" else []}))
         self.send(404, "nf", "text/plain")
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
@@ -94,6 +98,9 @@ with sync_playwright() as p:
     # Status tab
     pg.click("[data-tab=status]")
     assert "host=192.168.1.42" in pg.inner_text("#ini") and "45710" in pg.inner_text("#toml")
+    pg.wait_for_function("document.getElementById('usbtree').textContent.includes('Divaller')")
+    assert "USB 2.0 Hub" in pg.inner_text("#usbtree") and "port 2" in pg.inner_text("#usbtree")
+    assert "v0.4.0" in pg.inner_text("#hostline") and "v0.4.0" in pg.inner_text("#statustable")
     pg.screenshot(path=os.path.join(OUT, "status.png"), full_page=True)
     # Settings tab
     pg.click("[data-tab=settings]"); pg.wait_for_timeout(300)

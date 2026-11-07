@@ -53,6 +53,17 @@
   code { color: var(--cyan); }
   .pw { display: flex; gap: 6px; } .pw input { flex: 1; } .pw button { padding: 6px 10px; }
   [hidden] { display: none !important; }
+  .tree ul { list-style: none; margin: 0; padding-left: 22px; border-left: 1px dashed var(--line); }
+  .tree > ul { padding-left: 0; border: 0; }
+  .tree li { margin: 6px 0; }
+  .tree .node { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+  .tree .name { font-weight: 600; }
+  .tree .ids { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--dim); }
+  .tree .role { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); }
+  .tree .role.ctl { color: #0b1a1d; background: var(--green); border-color: var(--green); }
+  .tree .role.hub { color: var(--cyan); border-color: #2b6e78; }
+  .tree .role.warn { color: var(--amber); border-color: #6b5a2a; }
+  .tree .empty { color: var(--amber); }
 </style>
 </head>
 <body>
@@ -107,6 +118,10 @@
         <tr><td>BridgeSlider (config.toml)</td><td><code id="toml">—</code></td></tr>
         <tr><td>Bluetooth</td><td>Pair <b id="btname">—</b> as a controller, or run <code>diva_bridge.py --device ble</code></td></tr>
       </table>
+    </div>
+    <div class="panel">
+      <h2>USB devices</h2>
+      <div id="usbtree" class="tree">—</div>
     </div>
     <div class="panel">
       <h2>Device</h2>
@@ -322,7 +337,7 @@ function showState() {
   $("ledpanel").hidden = !(st.present && (st.kind === 1 || st.kind === 2));
   $("btnleds").parentElement.hidden = st.kind !== 1;
   const host = `${st.host}.local`;
-  $("hostline").textContent = `${st.ip} · ${host}`;
+  $("hostline").textContent = `v${st.fw} · ${st.ip} · ${host}`;
   $("ini").textContent = `[bridge] host=${st.ip}  port=${st.port}   (or host=${host})`;
   $("toml").textContent = `host = "${st.ip}"   port = ${st.port}`;
   $("btname").textContent = st.btname;
@@ -338,7 +353,7 @@ function showState() {
     ["Reports", `${st.reports} total, ${rate.toFixed(0)}/s`],
     ["Uptime", upStr],
     ["Free memory", `${Math.round(st.heap / 1024)} KB`],
-    ["Firmware", st.fw],
+    ["Firmware", `v${st.fw} (built ${st.built})`],
   ];
   $("statustable").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v).replace(/</g, "&lt;")}</td></tr>`).join("");
   for (const el of document.querySelectorAll(".otgonly")) el.hidden = !st.otg_board;
@@ -359,6 +374,34 @@ async function poll() {
   }
   showState();
   setTimeout(poll, document.hidden ? 1000 : failures ? 1000 : 30);
+}
+
+// --------------------------------------------------------------- USB tree
+function esc(t) { return String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+function renderUsb(devs) {
+  const kids = (parent) => devs.filter((d) => d.parent === parent).sort((a, b) => a.port - b.port);
+  const node = (d) => {
+    const isHub = d.cls === 9, ctl = d.role.startsWith("controller");
+    const warn = !isHub && !ctl;
+    const name = d.product || (isHub ? "USB hub" : "USB device");
+    const where = d.parent ? `port ${d.port} · ` : "";
+    const sub = kids(d.addr);
+    return `<li><span class="node"><span class="name">${esc(name)}</span>` +
+      `<span class="ids">${where}${d.vid}:${d.pid} · ${d.speed} speed${d.mfr ? " · " + esc(d.mfr) : ""}</span>` +
+      `<span class="role ${ctl ? "ctl" : isHub ? "hub" : warn ? "warn" : ""}">${esc(d.role)}</span></span>` +
+      (sub.length ? `<ul>${sub.map(node).join("")}</ul>` : isHub ? `<ul><li class="ids">(nothing on this hub)</li></ul>` : "") + "</li>";
+  };
+  const root = kids(0);
+  $("usbtree").innerHTML = `<ul><li><span class="node"><span class="name">ESP32-S3 USB OTG port</span></span>` +
+    (root.length ? `<ul>${root.map(node).join("")}</ul>`
+      : `<ul><li class="empty">Nothing attached. If a hub is plugged in and its lights are on, it's probably waiting for 5&nbsp;V on its upstream port: bridge the board's <b>USB-OTG</b> jumper, or try the controller directly.</li></ul>`) +
+    "</li></ul>";
+}
+async function pollUsb() {
+  if (!$("tab-status").hidden) {
+    try { renderUsb((await (await fetch("/api/usb", { cache: "no-store" })).json()).devices); } catch (e) {}
+  }
+  setTimeout(pollUsb, 2000);
 }
 
 // --------------------------------------------------------------- LED test
@@ -453,10 +496,12 @@ for (const b of document.querySelectorAll(".tabs button")) {
     for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
     for (const t of ["tester", "status", "settings"]) $("tab-" + t).hidden = t !== b.dataset.tab;
     if (b.dataset.tab === "settings" && !settingsLoaded) loadSettings();
+    if (b.dataset.tab === "status") fetch("/api/usb").then((r) => r.json()).then((j) => renderUsb(j.devices)).catch(() => {});
   };
 }
 draw(null);
 poll();
+pollUsb();
 </script>
 </body>
 </html>

@@ -25,12 +25,14 @@ SemaphoreHandle_t lock = nullptr;  // guards `act` setup/teardown vs ledTask
 uint8_t pendingNew[MAX_PENDING_NEW];
 std::atomic<int> pendingNewCount{0};
 std::atomic<bool> gone{false};
+volatile bool rescan = true;  // USB tree changed: scan from the client task
 // An endpoint errored/stalled; recovered from the client task (not callbacks).
 std::atomic<int> inRecover{0};   // 0 none, 1 error, 2 stall
 std::atomic<int> outRecover{0};  // DEV_GONE for the active device
 
 struct Active {
   bool open = false;
+  uint8_t addr = 0;
   bool closing = false;
   usb_device_handle_t dev = nullptr;
   const Profile *prof = nullptr;
@@ -58,12 +60,14 @@ void outCallback(usb_transfer_t *t);
 void clientEvent(const usb_host_client_event_msg_t *msg, void *) {
   switch (msg->event) {
     case USB_HOST_CLIENT_EVENT_NEW_DEV:
+      rescan = true;
       if (pendingNewCount < MAX_PENDING_NEW) {
         pendingNew[pendingNewCount] = msg->new_dev.address;
         pendingNewCount++;
       }
       break;
     case USB_HOST_CLIENT_EVENT_DEV_GONE:
+      rescan = true;
       if (act.open && msg->dev_gone.dev_hdl == act.dev) gone = true;
       break;
     default:
@@ -217,6 +221,7 @@ void openDevice(uint8_t addr) {
   xSemaphoreTake(lock, portMAX_DELAY);
   act = Active();
   act.dev = dev;
+  act.addr = addr;
   act.prof = p;
   act.vid = vid;
   act.pid = pid;
@@ -340,6 +345,105 @@ void closeActive() {
   xSemaphoreGive(lock);
 }
 
+// ------------------------------------------------------------- USB tree
+struct UsbNode {
+  uint8_t addr, parent, port;  // parent 0 = the ESP32's OTG port
+  uint16_t vid, pid;
+  uint8_t cls;
+  uint8_t speed;  // 0 low, 1 full, 2 high
+  char product[40];
+  char mfr[32];
+};
+constexpr int MAX_NODES = 16;
+UsbNode tree[MAX_NODES];
+int treeCount = 0;
+portMUX_TYPE treeMux = portMUX_INITIALIZER_UNLOCKED;
+
+void strDesc(const usb_str_desc_t *d, char *out, size_t max) {
+  size_t n = 0;
+  if (d && d->bLength > 2) {
+    size_t chars = (d->bLength - 2) / 2;
+    for (size_t i = 0; i < chars && n + 1 < max; i++) {
+      uint16_t c = d->wData[i];
+      out[n++] = (c >= 0x20 && c < 0x7F) ? (char)c : '?';
+    }
+  }
+  out[n] = 0;
+  while (n && out[n - 1] == ' ') out[--n] = 0;
+}
+
+/** Walk every enumerated device (hubs included) and record who hangs off
+ * which hub port. Runs in the client task; logs attach/detach. */
+void scanTree() {
+  uint8_t addrs[MAX_NODES];
+  int n = 0;
+  if (usb_host_device_addr_list_fill(MAX_NODES, addrs, &n) != ESP_OK) return;
+  UsbNode nodes[MAX_NODES];
+  usb_device_handle_t handles[MAX_NODES], parents[MAX_NODES];
+  bool opened[MAX_NODES];
+  int count = 0;
+  for (int i = 0; i < n && count < MAX_NODES; i++) {
+    usb_device_handle_t h;
+    bool mine = act.open && addrs[i] == act.addr;
+    if (mine) h = act.dev;
+    else if (usb_host_device_open(client, addrs[i], &h) != ESP_OK) continue;
+    UsbNode &nd = nodes[count];
+    memset(&nd, 0, sizeof(nd));
+    nd.addr = addrs[i];
+    const usb_device_desc_t *dd;
+    if (usb_host_get_device_descriptor(h, &dd) == ESP_OK) {
+      nd.vid = dd->idVendor;
+      nd.pid = dd->idProduct;
+      nd.cls = dd->bDeviceClass;
+    }
+    usb_device_info_t info;
+    parents[count] = nullptr;
+    if (usb_host_device_info(h, &info) == ESP_OK) {
+      nd.speed = info.speed == USB_SPEED_LOW ? 0 : info.speed == USB_SPEED_FULL ? 1 : 2;
+      nd.port = info.parent.port_num;
+      parents[count] = info.parent.dev_hdl;
+      strDesc(info.str_desc_product, nd.product, sizeof(nd.product));
+      strDesc(info.str_desc_manufacturer, nd.mfr, sizeof(nd.mfr));
+    }
+    handles[count] = h;
+    opened[count] = !mine;
+    count++;
+  }
+  for (int i = 0; i < count; i++) {
+    nodes[i].parent = 0;
+    for (int j = 0; j < count; j++)
+      if (parents[i] && handles[j] == parents[i]) nodes[i].parent = nodes[j].addr;
+  }
+  for (int i = 0; i < count; i++)
+    if (opened[i]) usb_host_device_close(client, handles[i]);
+
+  // Log what came and went.
+  for (int i = 0; i < count; i++) {
+    bool seen = false;
+    for (int j = 0; j < treeCount; j++)
+      seen |= tree[j].addr == nodes[i].addr && tree[j].vid == nodes[i].vid && tree[j].pid == nodes[i].pid;
+    if (!seen) {
+      const UsbNode &d = nodes[i];
+      char where[32];
+      if (d.parent) snprintf(where, sizeof(where), "hub %u port %u", d.parent, d.port);
+      else snprintf(where, sizeof(where), "OTG port");
+      Serial.printf("[USB] attached: %04X:%04X %s%s%s (%s, %s speed, addr %u)\n", d.vid, d.pid,
+                    d.mfr, d.mfr[0] && d.product[0] ? " " : "", d.product,
+                    d.cls == USB_CLASS_HUB ? "hub" : where, d.speed == 0 ? "low" : d.speed == 1 ? "full" : "high",
+                    d.addr);
+    }
+  }
+  for (int j = 0; j < treeCount; j++) {
+    bool still = false;
+    for (int i = 0; i < count; i++) still |= tree[j].addr == nodes[i].addr && tree[j].vid == nodes[i].vid;
+    if (!still) Serial.printf("[USB] detached: %04X:%04X %s\n", tree[j].vid, tree[j].pid, tree[j].product);
+  }
+  portENTER_CRITICAL(&treeMux);
+  memcpy(tree, nodes, sizeof(UsbNode) * count);
+  treeCount = count;
+  portEXIT_CRITICAL(&treeMux);
+}
+
 void libTask(void *arg) {
   usb_host_config_t cfg = {};
   cfg.skip_phy_setup = false;
@@ -372,6 +476,12 @@ void clientLoop(void *) {
       uint8_t addr = pendingNew[pendingNewCount - 1];
       pendingNewCount--;
       openDevice(addr);
+    }
+    static uint32_t lastScan = 0;
+    if (rescan || millis() - lastScan > 2000) {
+      rescan = false;
+      lastScan = millis();
+      scanTree();
     }
   }
 }
@@ -427,5 +537,42 @@ String describe() {
 }
 
 uint32_t reportCount() { return reports; }
+
+String usbTreeJson() {
+  UsbNode copy[MAX_NODES];
+  int n;
+  portENTER_CRITICAL(&treeMux);
+  n = treeCount;
+  memcpy(copy, tree, sizeof(UsbNode) * n);
+  portEXIT_CRITICAL(&treeMux);
+  uint8_t ctlAddr = act.open ? act.addr : 0;
+  String o = "[";
+  for (int i = 0; i < n; i++) {
+    const UsbNode &d = copy[i];
+    const Profile *p = findProfile(d.vid, d.pid);
+    const char *hint = wrongModeHint(d.vid, d.pid);
+    String role = d.cls == USB_CLASS_HUB ? "hub"
+                  : d.addr == ctlAddr    ? String("controller: ") + (p ? p->name : "?")
+                  : p                    ? String("supported, not in use (one controller at a time)")
+                  : hint                 ? String(hint)
+                                         : String("not a supported controller");
+    char head[160];
+    snprintf(head, sizeof(head),
+             "%s{\"addr\":%u,\"parent\":%u,\"port\":%u,\"vid\":\"%04X\",\"pid\":\"%04X\","
+             "\"cls\":%u,\"speed\":\"%s\",",
+             i ? "," : "", d.addr, d.parent, d.port, d.vid, d.pid, d.cls,
+             d.speed == 0 ? "low" : d.speed == 1 ? "full" : "high");
+    o += head;
+    // Names come from the device: keep them JSON-safe.
+    auto safe = [](const char *s) {
+      String r;
+      for (; *s; s++) r += (*s == '"' || *s == '\\') ? '\'' : *s;
+      return r;
+    };
+    o += "\"product\":\"" + safe(d.product) + "\",\"mfr\":\"" + safe(d.mfr) + "\",\"role\":\"" +
+         safe(role.c_str()) + "\"}";
+  }
+  return o + "]";
+}
 
 }  // namespace ControllerHost

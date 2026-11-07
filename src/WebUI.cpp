@@ -10,6 +10,7 @@
 #include "NetBridge.h"
 #include "Settings.h"
 #include "WebPage.h"
+#include "Version.h"
 
 using namespace diva;
 
@@ -90,9 +91,12 @@ void handleState() {
   body += "\"host\":" + jsonStr(NetBridge::hostName()) + ",";
   body += "\"ssid\":" + jsonStr(s.ssid) + ",";
   body += "\"btname\":" + jsonStr(s.name) + ",";
-  body += "\"fw\":" + jsonStr(__DATE__ " " __TIME__) + "}";
+  body += "\"fw\":" + jsonStr(DIVA_BRIDGE_VERSION) + ",";
+  body += "\"built\":" + jsonStr(__DATE__ " " __TIME__) + "}";
   sendJson(200, body);
 }
+
+void handleUsb() { sendJson(200, "{\"devices\":" + ControllerHost::usbTreeJson() + "}"); }
 
 void handleGetSettings() {
   String lines = Settings::toLines(false), body = "{";
@@ -159,6 +163,7 @@ void begin() {
   server = new WebServer(80);
   server->on("/", HTTP_GET, handleRoot);
   server->on("/api/state", HTTP_GET, handleState);
+  server->on("/api/usb", HTTP_GET, handleUsb);
   server->on("/api/settings", HTTP_GET, handleGetSettings);
   server->on("/api/settings", HTTP_POST, handlePostSettings);
   server->on("/api/leds", HTTP_POST, handleLeds);

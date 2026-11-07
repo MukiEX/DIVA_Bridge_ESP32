@@ -20,6 +20,10 @@ void begin();
 /** One-line description of what's attached, for the status command. */
 String describe();
 
+/** Every attached USB device (hubs too) as JSON: addr, parent (0 = OTG
+ * port), port, vid, pid, cls, speed, product, mfr, role. */
+String usbTreeJson();
+
 /** IN reports received since boot. */
 uint32_t reportCount();
 

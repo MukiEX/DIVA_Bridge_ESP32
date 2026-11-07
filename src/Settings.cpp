@@ -5,6 +5,7 @@
 #include <esp_random.h>
 
 #include "ConfigBlob.h"
+#include "Version.h"
 
 namespace Settings {
 
@@ -167,6 +168,7 @@ String settingsLines() {
   s += "leds=" + String(vals.leds ? 1 : 0) + "\n";
   s += String("xbox=") + (vals.xboxOneS ? "ones" : "seriesx") + "\n";
   s += String("otg_power=") + (vals.otgPower == OtgPower::Battery ? "battery" : "usb") + "\n";
+  s += "fw=" DIVA_BRIDGE_VERSION "\n";  // read-only: lets the flasher show the board's version
   return s;
 }
 
@@ -209,6 +211,7 @@ bool applyText(const String &text, String &error) {
     String key = l.substring(0, eq), value = l.substring(eq + 1);
     key.trim();
     key.toLowerCase();
+    if (key == "fw") continue;  // informational
     if (key == "unpair") {
       if (value == "1") {
         prefs.begin("divabridge", false);
@@ -247,6 +250,15 @@ void applyFromPartition() {
     free(blob);
     mirrorToPartition();  // erased or damaged: write the current settings
     return;
+  }
+  if (serial == applied) {
+    // Same settings; refresh the copy if it came from another firmware version.
+    String text(payload, len);
+    if (text.indexOf("fw=" DIVA_BRIDGE_VERSION "\n") < 0) {
+      free(blob);
+      mirrorToPartition();
+      return;
+    }
   }
   if (serial != applied) {
     Serial.println("[Settings] applying settings from the web flasher");

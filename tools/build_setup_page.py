@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Build the standalone web flasher: embeds the firmware images into
-tools/flasher/DIVA_Bridge_ESP32_Flasher.template.html.
+"""Build the standalone setup page (install / settings / console): embeds the
+firmware images into tools/setup_page/DIVA_Bridge_ESP32_Setup.template.html.
 
 After `pio run -e esp32s3_devkit -e esp32s3_usb_otg`:
 
-    python3 tools/build_flasher.py
+    python3 tools/build_setup_page.py
 
-writes dist/DIVA_Bridge_ESP32_Flasher.html - one file that works offline
-except for loading esptool-js from jsDelivr.
+writes dist/DIVA_Bridge_ESP32_Setup.html - one file that works offline
+except for loading esptool-js from jsDelivr. The version comes from
+src/Version.h, plus the git commit.
 
 Other build systems: pass the images per board,
     --board esp32s3_devkit:path/bootloader.bin,path/partitions.bin,path/firmware.bin
 and --boot-app0 path/boot_app0.bin.
 """
-import argparse, base64, glob, json, os, subprocess, sys
+import argparse, base64, glob, json, os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEMPLATE = os.path.join(ROOT, "tools", "flasher", "DIVA_Bridge_ESP32_Flasher.template.html")
+TEMPLATE = os.path.join(ROOT, "tools", "setup_page", "DIVA_Bridge_ESP32_Setup.template.html")
 ENVS = ["esp32s3_devkit", "esp32s3_usb_otg"]
 # ESP32-S3 Arduino layout; must match partitions.csv.
 OFFSETS = {"bootloader": 0x0, "partitions": 0x8000, "boot_app0": 0xE000, "app": 0x10000}
@@ -33,11 +34,16 @@ def find_boot_app0():
 
 
 def version():
+    text = open(os.path.join(ROOT, "src", "Version.h")).read()
+    return re.search(r'DIVA_BRIDGE_VERSION\s+"([^"]+)"', text).group(1)
+
+
+def commit():
     try:
-        return subprocess.check_output(["git", "-C", ROOT, "describe", "--always", "--dirty", "--tags"],
+        return subprocess.check_output(["git", "-C", ROOT, "describe", "--always", "--dirty"],
                                        text=True, stderr=subprocess.DEVNULL).strip()
     except Exception:
-        return "unknown"
+        return ""
 
 
 def main():
@@ -45,8 +51,7 @@ def main():
     ap.add_argument("--board", action="append", default=[],
                     help="env:bootloader.bin,partitions.bin,firmware.bin (default: .pio/build/<env>)")
     ap.add_argument("--boot-app0", default=None)
-    ap.add_argument("--version", default=None)
-    ap.add_argument("-o", "--out", default=os.path.join(ROOT, "dist", "DIVA_Bridge_ESP32_Flasher.html"))
+    ap.add_argument("-o", "--out", default=os.path.join(ROOT, "dist", "DIVA_Bridge_ESP32_Setup.html"))
     args = ap.parse_args()
 
     sets = {}
@@ -64,7 +69,7 @@ def main():
     if not boot_app0:
         sys.exit("boot_app0.bin not found - pass --boot-app0")
 
-    fw = {"version": args.version or version(), "boards": {}}
+    fw = {"version": version(), "commit": commit(), "boards": {}}
     for env, (bl, pt, app) in sets.items():
         parts = []
         for name, path in (("bootloader", bl), ("partitions", pt), ("boot_app0", boot_app0), ("app", app)):
@@ -85,7 +90,7 @@ def main():
     html = html[:i] + json.dumps(fw, separators=(",", ":")) + html[j:]
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     open(args.out, "w", encoding="utf-8").write(html)
-    print(f"wrote {args.out} ({os.path.getsize(args.out) // 1024} KB, firmware {fw['version']})")
+    print(f"wrote {args.out} ({os.path.getsize(args.out) // 1024} KB, firmware v{fw['version']} {fw['commit']})")
 
 
 if __name__ == "__main__":
