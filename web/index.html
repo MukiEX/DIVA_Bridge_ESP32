@@ -54,7 +54,7 @@
   .pw { display: flex; gap: 6px; } .pw input { flex: 1; } .pw button { padding: 6px 10px; }
   [hidden] { display: none !important; }
   .bgrow { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
-  .bgprev { width: 205px; height: auto; border-radius: 22px; border: 3px solid #0b0b0e; outline: 1px solid var(--line); cursor: grab; touch-action: none; }
+  .bgprev { width: 205px; height: auto; max-width: 100%; border-radius: 22px; border: 3px solid #0b0b0e; outline: 1px solid var(--line); cursor: grab; touch-action: none; }
   .bgctl { flex: 1; min-width: 220px; }
   .bgctl input[type=range] { padding: 0; }
   .tree ul { list-style: none; margin: 0; padding-left: 22px; border-left: 1px dashed var(--line); }
@@ -172,6 +172,20 @@
           <option value="15">15 s idle</option><option value="30">30 s idle</option><option value="60">1 min idle</option>
           <option value="300">5 min idle</option><option value="0">never</option>
         </select>
+        <label for="rotation" class="screenonly">Screen rotation</label>
+        <select id="rotation" class="screenonly">
+          <option value="0">Upright (portrait)</option><option value="90">90° (landscape)</option>
+          <option value="180">180° (portrait, upside down)</option><option value="270">270° (landscape)</option>
+        </select>
+        <label for="panel_style" class="screenonly">Text backdrop</label>
+        <select id="panel_style" class="screenonly">
+          <option value="panels">Panels (boxes behind each section)</option>
+          <option value="outline">Outline (a thin edge round each item)</option>
+        </select>
+        <label for="panel_opacity" class="screenonly">Backdrop darkness</label>
+        <input id="panel_opacity" class="screenonly" type="range" min="0" max="100" value="75">
+        <label for="panel_pad" class="screenonly">Outline thickness</label>
+        <input id="panel_pad" class="screenonly" type="range" min="4" max="8" value="6" title="Outline backdrop: pixels out from each item">
       </div>
       <div class="row" style="margin-top:14px">
         <button class="primary" id="save">Save &amp; restart</button>
@@ -180,14 +194,14 @@
       <p class="hint">Changing the network or the name can move the board to a different address. It reconnects within a few seconds of restarting.</p>
     </div>
     <div class="panel screenonly">
-      <h2>Background picture</h2>
+      <h2>Screen preview &amp; background picture</h2>
       <div class="bgrow">
         <canvas id="bgprev" width="410" height="502" class="bgprev" title="Drag to move the picture"></canvas>
         <div class="bgctl">
           <input type="file" id="bgfile" accept="image/*">
           <label for="bgdim" style="display:block;margin-top:12px">Darken picture</label>
           <input type="range" id="bgdim" min="0" max="80" value="25">
-          <p class="hint">Any picture works: it's scaled to fill the 410×502 screen and cropped. Drag the preview to choose which part shows. The preview shows where the panels sit.</p>
+          <p class="hint">Any picture works: it's scaled to fill the screen and cropped. Drag the preview to choose which part shows. The preview shows the screen with your rotation and backdrop settings; those take effect with <b>Save &amp; restart</b>.</p>
           <div class="row" style="margin-top:10px">
             <button class="primary" id="bgsave" disabled>Upload to the watch</button>
             <button id="bgclear">Remove picture</button>
@@ -492,12 +506,13 @@ window.addEventListener("pagehide", () => {
 });
 
 // --------------------------------------------------------------- settings
-const FIELDS = ["ssid", "port", "radio", "name", "xbox", "slider", "otg_power", "brightness", "screen_timeout"];
+const FIELDS = ["ssid", "port", "radio", "name", "xbox", "slider", "otg_power", "brightness", "screen_timeout", "rotation", "panel_style", "panel_opacity", "panel_pad"];
 const FLAGS = ["slider_reverse", "led_reverse", "leds"];
 async function loadSettings() {
   try {
     const s = await (await fetch("/api/settings", { cache: "no-store" })).json();
     for (const k of FIELDS) if (k in s) $(k).value = s[k];
+    bgSync();
     for (const k of FLAGS) if (k in s) $(k).checked = s[k] === "1";
     $("pass").value = ""; $("pass").placeholder = s.pass_set ? "unchanged (set)" : "none";
     $("unpair").checked = false;

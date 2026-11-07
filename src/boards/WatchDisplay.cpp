@@ -52,9 +52,29 @@ constexpr uint16_t C_AMBER = rgb(0xF2, 0xC8, 0x4B), C_RED = rgb(0xF0, 0x50, 0x50
 constexpr uint16_t C_PINK = rgb(0xE4, 0x5D, 0xD0), C_BLUE = rgb(0x5A, 0x8C, 0xFF);
 constexpr uint16_t C_OFF = rgb(0x2A, 0x2C, 0x34);
 
+// ------------------------------------------------------------- rotation
+// The panel's framebuffer is always WIDTH x HEIGHT (portrait). The UI is laid
+// out in "logical" coordinates (lw x lh, swapped for 90/270) and gfx's own
+// rotation maps drawing calls; shade() and the background copy use the same
+// mapping as Arduino_Canvas::writePixelPreclipped.
+int rot = 0;            // 0-3 (quarter turns)
+int lw = WIDTH, lh = HEIGHT;
+
+inline int fbIndex(int x, int y) {
+  switch (rot) {
+    case 1: return x * WIDTH + (WIDTH - 1 - y);
+    case 2: return (HEIGHT - 1 - y) * WIDTH + (WIDTH - 1 - x);
+    case 3: return (HEIGHT - 1 - x) * WIDTH + y;
+    default: return y * WIDTH + x;
+  }
+}
+
 // ------------------------------------------------------------- background
-// "bgimage" partition (partitions.csv, written by the setup page):
+// "bgimage" partition (partitions.csv, written by the setup / web page):
 //   "DVBG" u16 width u16 height u32 byte length, then RGB565 little-endian.
+// The pages make it at the screen's current orientation (410x502 or 502x410);
+// any other size is cover-scaled and centre-cropped here, so a picture made
+// before a rotation change still fills the screen.
 volatile bool redrawAll = false;
 
 void loadBackground() {
@@ -63,45 +83,117 @@ void loadBackground() {
   const esp_partition_t *part =
       esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "bgimage");
   uint8_t head[12];
-  bool ok = part && esp_partition_read(part, 0, head, sizeof(head)) == ESP_OK &&
-            memcmp(head, "DVBG", 4) == 0 && (head[4] | head[5] << 8) == WIDTH &&
-            (head[6] | head[7] << 8) == HEIGHT &&
-            (uint32_t)(head[8] | head[9] << 8 | head[10] << 16 | head[11] << 24) == WIDTH * HEIGHT * 2u;
-  if (ok) ok = esp_partition_read(part, 12, background, WIDTH * HEIGHT * 2) == ESP_OK;
+  int pw = 0, ph = 0;
+  bool ok = part && esp_partition_read(part, 0, head, sizeof(head)) == ESP_OK && memcmp(head, "DVBG", 4) == 0;
   if (ok) {
-    Serial.println("[Watch] background image loaded");
+    pw = head[4] | head[5] << 8;
+    ph = head[6] | head[7] << 8;
+    uint32_t len = head[8] | head[9] << 8 | head[10] << 16 | (uint32_t)head[11] << 24;
+    ok = pw > 0 && ph > 0 && len == (uint32_t)pw * ph * 2 && 12 + len <= part->size;
+  }
+  uint16_t *src = nullptr;
+  if (ok) {
+    src = (uint16_t *)heap_caps_malloc((size_t)pw * ph * 2, MALLOC_CAP_SPIRAM);
+    ok = src && esp_partition_read(part, 12, src, (size_t)pw * ph * 2) == ESP_OK;
+  }
+  if (ok) {
+    // cover: scale so the picture fills lw x lh, crop the middle (nearest neighbour)
+    float sc = max((float)lw / pw, (float)lh / ph);
+    float ox = (pw * sc - lw) / 2, oy = (ph * sc - lh) / 2;
+    for (int y = 0; y < lh; y++) {
+      int sy = min(ph - 1, (int)((y + oy) / sc));
+      for (int x = 0; x < lw; x++) {
+        int sx = min(pw - 1, (int)((x + ox) / sc));
+        background[fbIndex(x, y)] = src[sy * pw + sx];
+      }
+    }
+    free(src);
+    Serial.printf("[Watch] background image loaded (%dx%d)\n", pw, ph);
     return;
   }
+  free(src);
   // Default: a dark teal-to-navy gradient with a soft glow.
-  for (int y = 0; y < HEIGHT; y++)
-    for (int x = 0; x < WIDTH; x++) {
-      float t = (float)y / HEIGHT;
-      float dx = (x - WIDTH * 0.75f) / WIDTH, dy = (y - HEIGHT * 0.15f) / HEIGHT;
+  for (int y = 0; y < lh; y++)
+    for (int x = 0; x < lw; x++) {
+      float t = (float)y / lh;
+      float dx = (x - lw * 0.75f) / lw, dy = (y - lh * 0.15f) / lh;
       float glow = expf(-(dx * dx + dy * dy) * 6.0f);
       uint8_t r = 8 + 10 * t + 20 * glow, g = 40 - 22 * t + 90 * glow, b = 52 - 10 * t + 100 * glow;
-      background[y * WIDTH + x] = rgb(r, g, b);
+      background[fbIndex(x, y)] = rgb(r, g, b);
     }
 }
 
 // ------------------------------------------------------------- drawing helpers
-/** Darken a rectangle of the framebuffer to 25% so text over any picture reads. */
-void shade(int x0, int y0, int w, int h) {
-  uint16_t *fb = gfx->getFramebuffer();
-  for (int y = max(0, y0); y < min(HEIGHT, y0 + h); y++) {
-    uint16_t *row = fb + y * WIDTH;
-    for (int x = max(0, x0); x < min(WIDTH, x0 + w); x++) row[x] = (row[x] >> 2) & 0x39E7;
-  }
+// Text backdrops: either panels (big boxes) or, in outline mode, a shaded,
+// shape-following edge PAD px out around each item (capsules round the pills,
+// rings round the face buttons, rounded boxes round text and the slider).
+// keep = how much of the picture shows (0-256).
+int PAD = 6;
+bool outline = false;
+int keep = 64;
+
+inline uint16_t darken(uint16_t c) {
+  return (((c >> 11) * keep >> 8) << 11) | ((((c >> 5) & 63) * keep >> 8) << 5) | ((c & 31) * keep >> 8);
 }
 
+/** Darken a rectangle (logical coordinates). */
+void shade(int x0, int y0, int w, int h) {
+  if (keep >= 256) return;
+  uint16_t *fb = gfx->getFramebuffer();
+  for (int y = max(0, y0); y < min(lh, y0 + h); y++)
+    for (int x = max(0, x0); x < min(lw, x0 + w); x++) {
+      uint16_t &p = fb[fbIndex(x, y)];
+      p = darken(p);
+    }
+}
+/** Darken a rounded rectangle (corner radius r). */
+void shadeRound(int x0, int y0, int w, int h, int r) {
+  if (keep >= 256 || w <= 0 || h <= 0) return;
+  r = min(r, min(w, h) / 2);
+  uint16_t *fb = gfx->getFramebuffer();
+  for (int y = max(0, y0); y < min(lh, y0 + h); y++) {
+    int dy = y - y0, inset = 0;
+    int c = dy < r ? r - dy : dy >= h - r ? dy - (h - r) + 1 : 0;   // rows into a corner
+    if (c > 0) {
+      float e = c - 0.5f;
+      inset = r - (int)lroundf(sqrtf(max(0.0f, (float)r * r - e * e)));
+    }
+    for (int x = max(0, x0 + inset); x < min(lw, x0 + w - inset); x++) {
+      uint16_t &p = fb[fbIndex(x, y)];
+      p = darken(p);
+    }
+  }
+}
+/** Darken a disc. */
+void shadeCircle(int cx, int cy, int r) {
+  if (keep >= 256) return;
+  uint16_t *fb = gfx->getFramebuffer();
+  for (int y = max(0, cy - r); y <= min(lh - 1, cy + r); y++)
+    for (int x = max(0, cx - r); x <= min(lw - 1, cx + r); x++)
+      if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r) {
+        uint16_t &p = fb[fbIndex(x, y)];
+        p = darken(p);
+      }
+}
+/** Panel-mode box. */
+void panelBox(int x, int y, int w, int h) {
+  if (!outline) shade(x, y, w, h);
+}
+/** Outline-mode backdrop for one item; r = the item's own corner radius. */
+void itemBox(int x, int y, int w, int h, int r = 2) {
+  if (outline) shadeRound(x - PAD, y - PAD, w + 2 * PAD, h + 2 * PAD, r + PAD);
+}
+
+/** align: 0 = left, 1 = right, -1 = centre. */
 void text(int x, int y, const char *s, uint16_t color, const uint8_t *font, int align = 0) {
+  if (!*s) return;
   gfx->setFont(font);
   gfx->setTextColor(color);
   int16_t bx, by;
   uint16_t bw, bh;
-  if (align) {
-    gfx->getTextBounds(s, 0, 0, &bx, &by, &bw, &bh);
-    x -= align > 0 ? bw : bw / 2;  // 1 = right, -1 = centre... see callers
-  }
+  gfx->getTextBounds(s, 0, y, &bx, &by, &bw, &bh);
+  if (align) x -= align > 0 ? bw : bw / 2;
+  itemBox(x + bx, by, bw, bh);
   gfx->setCursor(x, y);
   gfx->print(s);
 }
@@ -128,8 +220,12 @@ void symbol(int key, int cx, int cy, int r, uint16_t color) {
 
 void pill(int x, int y, const char *label, bool on, uint16_t color) {
   int w = 44;
+  itemBox(x, y, w, 24, 12);
   gfx->fillRoundRect(x, y, w, 24, 12, on ? color : C_OFF);
+  bool o = outline;
+  outline = false;  // the pill is its own backdrop
   text(x + w / 2, y + 17, label, on ? 0x0000 : C_DIM, u8g2_font_helvB10_tr, -1);
+  outline = o;
 }
 
 // ------------------------------------------------------------- hardware bits
@@ -176,36 +272,45 @@ struct Snapshot {
   int rate;
 };
 
+/** Where things go, for portrait (410x502) or landscape (502x410). */
+struct Layout {
+  int titleH, titleBase;
+  int cardY, cardH, nameY, pillY, sliderY, sliderH, faceY, faceR, extY;
+  int statY, statH, cols, rowStart, rowH, valueX;
+  int footH;
+};
+constexpr Layout PORTRAIT = {64, 44, 74, 200, 104, 86, 124, 34, 214, 34, 266, 286, 180, 1, 314, 30, 128, 26};
+constexpr Layout LANDSCAPE = {56, 40, 64, 184, 92, 74, 106, 32, 186, 30, 238, 256, 118, 2, 282, 30, 104, 26};
+
 void draw(const Snapshot &s) {
   memcpy(gfx->getFramebuffer(), background, WIDTH * HEIGHT * 2);
   auto &cfg = Settings::get();
+  const Layout &L = lw > lh ? LANDSCAPE : PORTRAIT;
+  char line[64];
 
-  // Title bar
-  shade(0, 0, WIDTH, 64);
-  text(20, 42, "DIVA Bridge", C_TEXT, u8g2_font_helvB24_tr);
-  char bat[16];
-  if (s.battery >= 0) snprintf(bat, sizeof(bat), "%s%d%%", s.charging ? "+" : "", s.battery);
-  else snprintf(bat, sizeof(bat), "USB");
-  text(WIDTH - 20, 40, bat, s.battery >= 0 && s.battery < 15 && !s.charging ? C_RED : C_DIM,
-       u8g2_font_helvB14_tr, 1);
+  // Title, centred so the rounded corners don't clip it
+  panelBox(0, 0, lw, L.titleH);
+  text(lw / 2, L.titleBase, "DIVA BRIDGE", C_TEXT, u8g2_font_helvB24_tr, -1);
 
   // Controller card
-  shade(14, 78, WIDTH - 28, 196);
+  panelBox(14, L.cardY, lw - 28, L.cardH);
   if (!s.present) {
-    text(WIDTH / 2, 160, "No controller", C_TEXT, u8g2_font_helvB14_tr, -1);
-    text(WIDTH / 2, 188, "Plug one into the USB-C port", C_DIM, u8g2_font_helvR10_tr, -1);
-    text(WIDTH / 2, 208, "(through a powered hub)", C_DIM, u8g2_font_helvR10_tr, -1);
+    int my = L.cardY + L.cardH / 2;
+    text(lw / 2, my - 10, "No controller", C_TEXT, u8g2_font_helvB14_tr, -1);
+    text(lw / 2, my + 16, "Plug one into the USB-C port", C_DIM, u8g2_font_helvR10_tr, -1);
+    text(lw / 2, my + 34, "(through a powered hub)", C_DIM, u8g2_font_helvR10_tr, -1);
   } else {
     Decoded d = decode(s.pkt);
     uint16_t ext = s.pkt[24] | s.pkt[25] << 8;
-    text(28, 108, s.name, C_TEXT, u8g2_font_helvB14_tr);
-    // FN / L1 / L2 / L3
+    text(28, L.nameY, s.name, C_TEXT, u8g2_font_helvB14_tr);
+    // L1 / L2 / L3 / FN
     const char *small[4] = {"L1", "L2", "L3", "FN"};
     const int bits[4] = {BTN_L1, BTN_L2, BTN_L3, BTN_FN};
     for (int i = 0; i < 4; i++)
-      pill(WIDTH - 28 - (4 - i) * 50, 90, small[i], d.pressed >> bits[i] & 1, i == 3 ? C_AMBER : C_PINK);
+      pill(lw - 28 - (4 - i) * 50, L.pillY, small[i], d.pressed >> bits[i] & 1, i == 3 ? C_AMBER : C_PINK);
     // Slider
-    const int sx = 28, sy = 128, sw = WIDTH - 56, sh = 34;
+    const int sx = 28, sy = L.sliderY, sw = lw - 56, sh = L.sliderH;
+    itemBox(sx - 4, sy - 4, sw + 8, sh + 8, 8);
     gfx->drawRoundRect(sx - 4, sy - 4, sw + 8, sh + 8, 8, rgb(0x2B, 0x6E, 0x78));
     for (int i = 0; i < 32; i++) {
       int x0 = sx + i * sw / 32, x1 = sx + (i + 1) * sw / 32;
@@ -215,12 +320,14 @@ void draw(const Snapshot &s) {
     // Face buttons
     const int keys[4] = {BTN_TRIANGLE, BTN_SQUARE, BTN_CROSS, BTN_CIRCLE};
     const uint16_t colors[4] = {C_GREEN, C_PINK, C_BLUE, C_RED};
+    const int r = L.faceR, span = lw - 56 - 2 * (r + 8);
     for (int i = 0; i < 4; i++) {
-      int cx = 28 + 44 + i * ((WIDTH - 56 - 88) / 3), cy = 220, r = 36;
+      int cx = 28 + r + 8 + i * span / 3, cy = L.faceY;
       bool on = d.pressed >> keys[i] & 1;
+      if (outline) shadeCircle(cx, cy, r + PAD);
       if (on) gfx->fillCircle(cx, cy, r, colors[i]);
       for (int t = 0; t < 3; t++) gfx->drawCircle(cx, cy, r - t, colors[i]);
-      symbol(i, cx, cy, 18, on ? 0xFFFF : colors[i]);
+      symbol(i, cx, cy, r / 2, on ? 0xFFFF : colors[i]);
     }
     if (ext) {
       char e[48] = "";
@@ -230,30 +337,39 @@ void draw(const Snapshot &s) {
           strcat(e, names[i]);
           strcat(e, " ");
         }
-      text(WIDTH / 2, 268, e, C_AMBER, u8g2_font_helvB10_tr, -1);
+      e[strlen(e) - 1] = 0;
+      text(lw / 2, L.extY, e, C_AMBER, u8g2_font_helvB10_tr, -1);
     }
   }
 
-  // Status card
-  shade(14, 288, WIDTH - 28, 182);
-  char line[64];
-  int y = 318;
-  auto row = [&](const char *label, const char *value, uint16_t color) {
-    text(28, y, label, C_DIM, u8g2_font_helvR12_tr);
-    text(132, y, value, color, u8g2_font_helvB14_tr);
-    y += 34;
+  // Status card: one column (portrait) or two (landscape)
+  panelBox(14, L.statY, lw - 28, L.statH);
+  int col = 0, y = L.rowStart;
+  const int colW = (lw - 28) / L.cols;
+  auto row = [&](const char *label, const char *value, uint16_t color, const char *sub = nullptr) {
+    int x = 28 + col * colW;
+    text(x, y, label, C_DIM, u8g2_font_helvR12_tr);
+    text(x + L.valueX - 28, y, value, color, u8g2_font_helvB14_tr);
+    if (sub) {
+      y += 18;
+      text(x + L.valueX - 28, y, sub, C_DIM, u8g2_font_helvR10_tr);
+    }
+    y += L.rowH;
   };
-  if (cfg.radio == Settings::Radio::BleOnly) row("Wi-Fi", "off", C_DIM);
-  else if (s.wifiUp) row("Wi-Fi", s.ip, C_TEXT);
-  else row("Wi-Fi", cfg.ssid.length() ? "connecting..." : "not set up", C_AMBER);
+  auto nextCol = [&] {
+    if (L.cols > 1) {
+      col = 1;
+      y = L.rowStart;
+    }
+  };
   snprintf(line, sizeof(line), "%s.local:%u", NetBridge::hostName().c_str(), cfg.port);
-  if (s.wifiUp) {
-    text(132, y - 8, line, C_DIM, u8g2_font_helvR10_tr);
-    y += 14;
-  }
-  if (s.native) snprintf(line, sizeof(line), "%d connected (%d Wi-Fi)", s.native, s.tcp);
+  if (cfg.radio == Settings::Radio::BleOnly) row("Wi-Fi", "off", C_DIM);
+  else if (s.wifiUp) row("Wi-Fi", s.ip, C_TEXT, line);
+  else row("Wi-Fi", cfg.ssid.length() ? "connecting..." : "not set up", C_AMBER);
+  if (s.native) snprintf(line, sizeof(line), "%d (%d Wi-Fi)", s.native, s.tcp);
   else snprintf(line, sizeof(line), "none");
   row("Games", line, s.native ? C_GREEN : C_DIM);
+  nextCol();
   const char *pad = cfg.radio == Settings::Radio::WifiOnly ? "off"
                     : !s.ble                               ? "not paired"
                     : s.native                             ? "muted (game)"
@@ -261,11 +377,14 @@ void draw(const Snapshot &s) {
   row("Xbox pad", pad, cfg.radio != Settings::Radio::WifiOnly && s.ble && !s.native ? C_GREEN : C_DIM);
   snprintf(line, sizeof(line), "%d reports/s", s.rate);
   row("USB", s.present ? line : "-", C_DIM);
+  if (s.battery >= 0) snprintf(line, sizeof(line), "%d%%%s", s.battery, s.charging ? " charging" : "");
+  else snprintf(line, sizeof(line), "no battery");
+  row("Battery", line, s.battery >= 0 && s.battery < 15 && !s.charging ? C_RED : s.charging ? C_GREEN : C_TEXT);
 
   // Footer
   snprintf(line, sizeof(line), "v%s  -  hold BOOT while plugging in to flash", DIVA_BRIDGE_VERSION);
-  shade(0, HEIGHT - 26, WIDTH, 26);
-  text(WIDTH / 2, HEIGHT - 8, line, C_DIM, u8g2_font_helvR10_tr, -1);
+  panelBox(0, lh - L.footH, lw, L.footH);
+  text(lw / 2, lh - 8, line, C_DIM, u8g2_font_helvR10_tr, -1);
 
   gfx->flush();
 }
@@ -361,6 +480,14 @@ void begin() {
     Serial.println("[Watch] display init failed");
     return;
   }
+  auto &cfg = Settings::get();
+  rot = (cfg.rotation / 90) & 3;
+  gfx->setRotation(rot);
+  lw = gfx->width();
+  lh = gfx->height();
+  outline = cfg.panelOutline;
+  PAD = cfg.panelPad;
+  keep = 256 - cfg.panelOpacity * 256 / 100;
   panel->setBrightness(Settings::get().brightness);
   loadBackground();
   if (!background) return;

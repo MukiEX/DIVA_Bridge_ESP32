@@ -38,6 +38,10 @@ void load() {
   vals.otgPower = (OtgPower)prefs.getUChar("otg_power", 0);
   vals.brightness = prefs.getUChar("brightness", 200);
   vals.screenTimeout = prefs.getUShort("scr_timeout", 60);
+  vals.rotation = prefs.getUShort("rotation", 0);
+  vals.panelOpacity = prefs.getUChar("panel_opac", 75);
+  vals.panelOutline = prefs.getBool("panel_outl", false);
+  vals.panelPad = prefs.getUChar("panel_pad", 6);
   prefs.end();
 }
 
@@ -58,6 +62,10 @@ void save() {
   prefs.putUChar("otg_power", (uint8_t)vals.otgPower);
   prefs.putUChar("brightness", vals.brightness);
   prefs.putUShort("scr_timeout", vals.screenTimeout);
+  prefs.putUShort("rotation", vals.rotation);
+  prefs.putUChar("panel_opac", vals.panelOpacity);
+  prefs.putBool("panel_outl", vals.panelOutline);
+  prefs.putUChar("panel_pad", vals.panelPad);
   prefs.end();
   dirty = false;
   mirrorToPartition();
@@ -79,6 +87,10 @@ void printSettings() {
   Serial.printf("otg_power=%s\n", vals.otgPower == OtgPower::Battery ? "battery" : "usb");
   Serial.printf("brightness=%u\n", vals.brightness);
   Serial.printf("screen_timeout=%u\n", vals.screenTimeout);
+  Serial.printf("rotation=%u\n", vals.rotation);
+  Serial.printf("panel_opacity=%u\n", vals.panelOpacity);
+  Serial.printf("panel_style=%s\n", vals.panelOutline ? "outline" : "panels");
+  Serial.printf("panel_pad=%u\n", vals.panelPad);
   Serial.printf("unsaved=%d\n", dirty);
   Serial.println("--- end ---");
 }
@@ -101,6 +113,10 @@ void help() {
       "  set otg_power usb|battery  ESP32-S3-USB-OTG board: host port power\n"
       "  set brightness 1-255    screen boards: brightness\n"
       "  set screen_timeout <s>  screen boards: dim after idle seconds (0 = never)\n"
+      "  set rotation 0|90|180|270  screen boards: turn the screen layout\n"
+      "  set panel_opacity 0-100 screen boards: how dark the boxes behind text are\n"
+      "  set panel_style panels|outline  screen boards: big boxes, or a thin edge round each item\n"
+      "  set panel_pad 4-8       screen boards: outline style, px out from each item\n"
       "  save                    store settings and restart\n"
       "  forget                  erase Wi-Fi network and restart\n"
       "  unpair                  forget all Bluetooth pairings and restart\n"
@@ -147,6 +163,22 @@ bool setKey(const String &key, const String &value, bool quiet = false) {
     long t = value.toInt();
     ok = (t > 0 || value == "0") && t <= 3600;
     if (ok) vals.screenTimeout = t;
+  } else if (key == "rotation") {
+    long r = value.toInt();
+    ok = (r == 0 && value == "0") || r == 90 || r == 180 || r == 270;
+    if (ok) vals.rotation = r;
+  } else if (key == "panel_opacity") {
+    long o = value.toInt();
+    ok = (o > 0 || value == "0") && o <= 100;
+    if (ok) vals.panelOpacity = o;
+  } else if (key == "panel_style") {
+    if (value == "panels") vals.panelOutline = false;
+    else if (value == "outline") vals.panelOutline = true;
+    else ok = false;
+  } else if (key == "panel_pad") {
+    long v = value.toInt();
+    ok = v >= 4 && v <= 8;
+    if (ok) vals.panelPad = v;
   } else if (key == "otg_power") {
     if (value == "usb") vals.otgPower = OtgPower::UsbDev;
     else if (value == "battery") vals.otgPower = OtgPower::Battery;
@@ -186,6 +218,10 @@ String settingsLines() {
   s += String("otg_power=") + (vals.otgPower == OtgPower::Battery ? "battery" : "usb") + "\n";
   s += "brightness=" + String(vals.brightness) + "\n";
   s += "screen_timeout=" + String(vals.screenTimeout) + "\n";
+  s += "rotation=" + String(vals.rotation) + "\n";
+  s += "panel_opacity=" + String(vals.panelOpacity) + "\n";
+  s += String("panel_style=") + (vals.panelOutline ? "outline" : "panels") + "\n";
+  s += "panel_pad=" + String(vals.panelPad) + "\n";
   s += "fw=" DIVA_BRIDGE_VERSION "\n";  // read-only: lets the flasher show the board's version
   return s;
 }

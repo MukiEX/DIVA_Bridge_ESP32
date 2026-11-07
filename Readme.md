@@ -38,6 +38,9 @@ One controller at a time. The serial log says so if a ZhouSensor is in the wrong
   - It has **one USB-C port**, and this firmware makes it the controller port, so there's no serial console. To install or change settings from the setup page, hold **BOOT** while plugging it into the PC. Day to day, use its web page.
   - The controller goes on that port through a **powered USB-C hub**. The watch runs from its battery meanwhile, unless the hub also feeds 5 V back up its host lead, which some do. A hub that won't wake without 5 V from the host won't work here.
   - The screen dims after a set idle time (*Dim screen after*, default 1 min). Touching it, or any controller input, wakes it.
+  - *Screen rotation* turns the layout 0/90/180/270°. At 90° and 270° it switches to a landscape layout with the status in two columns.
+  - *Text backdrop* is either **panels** (a dark box behind each section) or **outline** (a dark edge that follows each item: capsules round the pills, rings round the face buttons, rounded boxes round text and the slider). *Outline thickness* sets how far it reaches (4–8 px), and *Backdrop darkness* sets how dark either style is (0–100 %).
+  - The screen previews on both pages use the same layout as the firmware, so they show what each setting will look like.
 
 ## Setup page (install, settings, console)
 
@@ -57,7 +60,7 @@ The page switches the port between flashing mode (Install and Settings) and the 
 
 The settings live in a 4 KB `divacfg` partition at `0x310000` (see `partitions.csv` and `src/ConfigBlob.h`). The firmware applies a newly written set once at boot. It copies any change made over serial or the web page back into that partition, together with its version, so *Read from board* always shows what's in use. Firmware updates write the bootloader, partition table, `boot_app0` and app separately, so they leave settings and pairings alone.
 
-**Background picture (watch board).** On the Settings tab, choose any picture. The page scales it to fill the 410×502 screen and crops the rest. Drag the preview to pick which part shows, and use *Darken picture* so the text stays readable. The preview draws the screen's panels on top. *Write picture* sends it on its own, and *Include the picture when installing* sends it with Install. *Remove picture* goes back to the default gradient. The board's own web page has the same panel and uploads over Wi-Fi with no cable. The picture lives in the `bgimage` partition at `0x320000`, as `"DVBG"`, u16 width, u16 height, u32 length, then RGB565 little-endian.
+**Background picture (watch board).** On the Settings tab, choose any picture. The page scales it to fill the 410×502 screen and crops the rest. Drag the preview to pick which part shows, and use *Darken picture* so the text stays readable. The preview draws the screen's panels on top. *Write picture* sends it on its own, and *Include the picture when installing* sends it with Install. *Remove picture* goes back to the default gradient. The board's own web page has the same panel and uploads over Wi-Fi with no cable. The picture lives in the `bgimage` partition at `0x320000`, as `"DVBG"`, u16 width, u16 height, u32 length, then RGB565 little-endian. It's made at the rotation chosen when you write it; if you change the rotation later, the watch re-scales and crops it to fit.
 
 For boards with a single USB-C port, which is a USB host in this firmware: hold **BOOT** while plugging the board into the PC, and Install and Settings work the same. The console can't follow it there, because after a restart the port belongs to the controller. Use the board's web page instead.
 

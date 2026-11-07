@@ -214,6 +214,19 @@ with sync_playwright() as p:
         pg.click("#bgclear"); pg.wait_for_function(f"window.__fake.writes.length === {n + 2}")
         assert js("window.__fake.writes.at(-1)") == [{"address": 0x320000, "len": 0x1000}] and fl(0x320000, 4) == b"\xff" * 4
         pg.screenshot(path=os.path.join(tempfile.gettempdir(), "setup_watch.png"), full_page=True)
+        pg.locator("#bgprev").screenshot(path=os.path.join(tempfile.gettempdir(), "preview_portrait_panels.png"))
+        # rotation + outline backdrop: preview and picture follow, settings carry them
+        pg.select_option("#rotation", "90"); pg.select_option("#panel_style", "outline")
+        pg.fill("#panel_opacity", "60"); pg.dispatch_event("#panel_opacity", "input"); pg.fill("#panel_pad", "8"); pg.dispatch_event("#panel_pad", "input")
+        assert js("[document.getElementById('bgprev').width, document.getElementById('bgprev').height]") == [502, 410]
+        pg.locator("#bgprev").screenshot(path=os.path.join(tempfile.gettempdir(), "preview_landscape_outline.png"))
+        n = js("window.__fake.writes.length"); pg.click("#bgwrite"); pg.wait_for_function(f"window.__fake.writes.length === {n + 1}")
+        hdr = fl(0x320000, 12)
+        assert int.from_bytes(hdr[4:6], "little") == 502 and int.from_bytes(hdr[6:8], "little") == 410, hdr
+        pg.click("#writecfg"); pg.wait_for_function(f"window.__fake.writes.length === {n + 2}")
+        kv = decode(fl(0x310000, 0x1000))[1]
+        assert kv["rotation"] == "90" and kv["panel_style"] == "outline" and kv["panel_opacity"] == "60" and kv["panel_pad"] == "8", kv
+        pg.select_option("#rotation", "0"); pg.select_option("#panel_style", "panels")
         print("watch board OK")
 
     # 8. Encoder vs firmware decoder on awkward text

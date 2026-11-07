@@ -31,6 +31,10 @@ struct Values {
   OtgPower otgPower = OtgPower::UsbDev;  // ESP32-S3-USB-OTG board only
   uint8_t brightness = 200;       // screen boards: 1-255
   uint16_t screenTimeout = 60;    // screen boards: dim after this many idle s (0 = never)
+  uint16_t rotation = 0;          // screen boards: UI rotation, 0 / 90 / 180 / 270 degrees
+  uint8_t panelOpacity = 75;      // screen boards: % black behind the text (0-100)
+  bool panelOutline = false;      // screen boards: shade just around each item, not panels
+  uint8_t panelPad = 6;           // screen boards: outline style, px out from each item (4-8)
 };
 
 /** Load from NVS (defaults where nothing is stored). */
