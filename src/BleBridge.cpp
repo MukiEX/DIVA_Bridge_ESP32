@@ -45,6 +45,8 @@ std::atomic<bool> restartStream{false};
 // Connections that did the handshake.
 portMUX_TYPE nmux = portMUX_INITIALIZER_UNLOCKED;
 uint16_t nativeConns[MAX_NATIVE];
+uint32_t nativeSeen[MAX_NATIVE];   // millis() of the client's last CONTROL write
+bool nativeLeased[MAX_NATIVE];     // handshook with protocol >= 3: must keep writing
 int nativeCount = 0;
 
 inline NimBLEServer *s_server() { return server.load(std::memory_order_acquire); }
@@ -55,12 +57,24 @@ bool isNative(uint16_t h) {
   return false;
 }
 
-void addNative(uint16_t h) {
+int nativeIndex(uint16_t h) {
+  for (int i = 0; i < nativeCount; i++)
+    if (nativeConns[i] == h) return i;
+  return -1;
+}
+
+void addNative(uint16_t h, bool leased) {
   bool added = false;
   portENTER_CRITICAL(&nmux);
-  if (!isNative(h) && nativeCount < MAX_NATIVE) {
-    nativeConns[nativeCount++] = h;
+  int i = nativeIndex(h);
+  if (i < 0 && nativeCount < MAX_NATIVE) {
+    i = nativeCount++;
+    nativeConns[i] = h;
     added = true;
+  }
+  if (i >= 0) {
+    nativeSeen[i] = millis();
+    nativeLeased[i] = leased;
   }
   portEXIT_CRITICAL(&nmux);
   if (added) DivaState::nativeAcquire("BLE");
@@ -71,12 +85,23 @@ void removeNative(uint16_t h) {
   portENTER_CRITICAL(&nmux);
   for (int i = 0; i < nativeCount; i++)
     if (nativeConns[i] == h) {
-      nativeConns[i] = nativeConns[--nativeCount];
+      --nativeCount;
+      nativeConns[i] = nativeConns[nativeCount];
+      nativeSeen[i] = nativeSeen[nativeCount];
+      nativeLeased[i] = nativeLeased[nativeCount];
       removed = true;
       break;
     }
   portEXIT_CRITICAL(&nmux);
   if (removed) DivaState::nativeRelease("BLE");
+}
+
+/** Any CONTROL write from a native client renews its lease. */
+void touchNative(uint16_t h) {
+  portENTER_CRITICAL(&nmux);
+  int i = nativeIndex(h);
+  if (i >= 0) nativeSeen[i] = millis();
+  portEXIT_CRITICAL(&nmux);
 }
 
 void statusBytes(uint8_t s[8]) {
@@ -99,11 +124,11 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
     uint16_t h = info.getConnHandle();
     if (v.size() >= 4 && memcmp(v.data(), "DIVA", 4) == 0) {
       bool again = isNative(h);
+      int ver = v.size() > 4 ? v.data()[4] : 0;
       Serial.printf("[BLE] handshake from %s (protocol %d, MTU %d)%s\n",
-                    info.getAddress().toString().c_str(),
-                    v.size() > 4 ? v.data()[4] : 0, info.getMTU(),
+                    info.getAddress().toString().c_str(), ver, info.getMTU(),
                     again ? " - again: restarting its stream" : "");
-      addNative(h);
+      addNative(h, ver >= 3);
       restartStream = true;
       if (outTask) xTaskNotifyGive(outTask);
       // 7.5 ms connection interval for the lowest latency.
@@ -111,6 +136,8 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
     } else if (v.size() >= 3 && memcmp(v.data(), "BYE", 3) == 0) {
       Serial.printf("[BLE] %s said goodbye\n", info.getAddress().toString().c_str());
       removeNative(h);
+    } else {
+      touchNative(h);   // "HI" (or anything else): still here
     }
     uint8_t s[8];
     statusBytes(s);
@@ -269,9 +296,16 @@ void housekeeping() {
   uint16_t stale[MAX_NATIVE];
   int n = 0;
   portENTER_CRITICAL(&nmux);
+  uint32_t now = millis();
   for (int i = 0; i < nativeCount; i++) {
     bool alive = false;
     for (uint16_t p : peers) alive |= p == nativeConns[i];
+    // A leased client that stopped checking in is gone (killed game, OS kept the link)
+    if (alive && nativeLeased[i] && now - nativeSeen[i] > LEASE_MS) {
+      alive = false;
+      Serial.printf("[BLE] native client (connection %u) went quiet for %u s - releasing it\n",
+                    nativeConns[i], (unsigned)(LEASE_MS / 1000));
+    }
     if (!alive) stale[n++] = nativeConns[i];
   }
   portEXIT_CRITICAL(&nmux);

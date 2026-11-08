@@ -28,8 +28,13 @@ namespace BleBridge {
 
 // 2: a repeated "DIVA" handshake restarts the stream, and natives get an
 //    input notification at least every HEARTBEAT_MS (a liveness signal).
-constexpr uint8_t PROTOCOL_VERSION = 2;
+// 3: a client that handshakes with version >= 3 holds a lease: it writes
+//    something to CONTROL (e.g. "HI") at least every LEASE_MS, or it's dropped
+//    as if it had said "BYE" - so a game that dies without a goodbye (the OS
+//    keeps the link up for the Xbox pad) can't keep native mode on.
+constexpr uint8_t PROTOCOL_VERSION = 3;
 constexpr uint32_t HEARTBEAT_MS = 1000;
+constexpr uint32_t LEASE_MS = 6000;
 
 #define DIVA_BLE_SERVICE_UUID "5e1a0000-d1ba-4b1d-9e00-000000d1ba00"
 #define DIVA_BLE_CONTROL_UUID "5e1a0001-d1ba-4b1d-9e00-000000d1ba00"

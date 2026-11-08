@@ -161,6 +161,7 @@ Restarting the game, or the bridge, needs no replug:
 - While the bridge is connected, the board sends it something at least once a second, even with the controller idle. If 3 s pass with nothing, the bridge does the handshake again. If that doesn't help, it drops the Bluetooth link and reconnects.
 - On the board, a repeated handshake from the same connection restarts that connection's stream. The old session's taps are dropped, and the status and current input are sent at once.
 - The bridge says `BYE` when it stops normally, and the Xbox pad comes back right away. A force-killed bridge can't say goodbye. Windows also keeps the Bluetooth link up for the gamepad driver. The next bridge's handshake takes over cleanly anyway.
+- Every 2 s the bridge (and the Quest recomp) sends `HI`. A client that stops doing that for 6 s is dropped, because it's a game that was killed while the system kept the Bluetooth link up. The Xbox pad comes back and the screen shows *Games: none* again. Only clients that handshake with protocol 3 or later are held to this.
 
 ## Latency notes
 
@@ -187,7 +188,7 @@ Restarting the game, or the bridge, needs no replug:
 
 | UUID suffix | Props | Contents |
 |---|---|---|
-| `…0001` CONTROL | read, write, notify | write `DIVA`+version → native (again → restart the stream); `BYE` → leave. Read/notify: `[ver, present, kind, native_clients, VID LE, PID LE]` |
+| `…0001` CONTROL | read, write, notify | write `DIVA`+version → native (again → restart the stream); `BYE` → leave; `HI` → still here (a client that handshakes with version ≥ 3 must write at least every 6 s, or it's dropped as if it had said `BYE`). Read/notify: `[ver, present, kind, native_clients, VID LE, PID LE]` |
 | `…0002` INPUT | read, notify | 24-byte packet + 2 bytes extended buttons (same bytes as an `X` reply) + 2-byte press counter. Notified on every change and at least once a second (protocol 2) |
 | `…0003` LEDS | write, write w/o response | 100-byte `DLa` packet (MTU ≥ 103, or a long write) |
 

@@ -27,9 +27,10 @@ class FakeEsp:
         self.input_cb = None
         self.status_cb = None
         self.natives = 0
+        self.pings = 0
 
     def status(self):
-        return bytes((2, 1, 1, self.natives, 0x8F, 0x0E, 0x13, 0x22))   # Divaller 0E8F:2213
+        return bytes((3, 1, 1, self.natives, 0x8F, 0x0E, 0x13, 0x22))   # Divaller 0E8F:2213, protocol 3
 
     def packet(self):
         return bytes((0x42, 0x56, 0x5A)) + bytes(21) + bytes(4)
@@ -79,6 +80,8 @@ class BleakClient:
             ESP.stalled = ESP.dead_after_handshake   # a new handshake restarts the stream
         elif char == CONTROL and data.startswith(b"BYE"):
             ESP.natives = 0
+        elif char == CONTROL and data.startswith(b"HI"):
+            ESP.pings += 1
 
     async def read_gatt_char(self, char):
         return bytearray(ESP.status() if char == CONTROL else ESP.packet())
@@ -117,7 +120,9 @@ def wait_for(cond, timeout=8.0, what=""):
 dev = db.BleBridgeDevice(None, "DIVA Bridge", False, True, 20)
 wait_for(lambda: dev.present and ESP.handshakes == 1, what="first handshake")
 assert dev.read(24)[:3] == b"BVZ"
-print("handshake OK")
+assert any(d == b"DIVA" + bytes((3,)) for c, d in ESP.writes), ESP.writes
+wait_for(lambda: ESP.pings >= 1, timeout=5, what="lease ping")
+print("handshake + lease ping OK")
 
 # A game connects over TCP: the relay restarts the stream.
 srv = db.Server(("127.0.0.1", 0), db.make_handler(dev))
