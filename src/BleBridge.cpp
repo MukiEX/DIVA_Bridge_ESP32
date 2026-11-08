@@ -56,6 +56,33 @@ constexpr int MAX_SUBS = 8;
 uint16_t inputSubs[MAX_SUBS];
 int inputSubCount = 0;
 
+// Connections subscribed to the Xbox pad's reports (the host's gamepad link).
+uint16_t hidSubs[MAX_SUBS];
+int hidSubCount = 0;
+
+// Game-only links to drop once the game has left (Android keeps such a link up
+// after the app dies, and a relaunch reusing it can stall): handle + when.
+uint16_t dropConn[MAX_SUBS];
+uint32_t dropAt[MAX_SUBS];
+int dropCount = 0;
+
+bool hasHid(uint16_t h) {
+  for (int i = 0; i < hidSubCount; i++)
+    if (hidSubs[i] == h) return true;
+  return false;
+}
+
+/** The game on this link left: if it isn't the gamepad link, disconnect it shortly. */
+void dropIfGameOnly(uint16_t h) {
+  portENTER_CRITICAL(&nmux);
+  if (!hasHid(h) && dropCount < MAX_SUBS) {
+    dropConn[dropCount] = h;
+    dropAt[dropCount] = millis() + 500;
+    dropCount++;
+  }
+  portEXIT_CRITICAL(&nmux);
+}
+
 // Recent events, for the screen (and the serial log).
 constexpr int MAX_EVENTS = 12;
 Event eventRing[MAX_EVENTS];
@@ -176,6 +203,7 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
       Serial.printf("[BLE] %s said goodbye\n", info.getAddress().toString().c_str());
       event("goodbye from %s", shortAddr(info.getAddress()).c_str());
       removeNative(h);
+      dropIfGameOnly(h);
     } else {
       touchNative(h);   // "HI" (or anything else): still here
     }
@@ -359,7 +387,32 @@ void housekeeping() {
     if (!alive) stale[n++] = nativeConns[i];
   }
   portEXIT_CRITICAL(&nmux);
-  for (int i = 0; i < n; i++) removeNative(stale[i]);
+  for (int i = 0; i < n; i++) {
+    removeNative(stale[i]);
+    bool alive = false;
+    for (uint16_t p : peers) alive |= p == stale[i];
+    if (alive) dropIfGameOnly(stale[i]);   // went quiet: its link is a leftover
+  }
+
+  // Drop leftover game-only links (after a goodbye / a quiet game).
+  for (int i = 0; i < dropCount;) {
+    if ((int32_t)(now - dropAt[i]) < 0) {
+      i++;
+      continue;
+    }
+    uint16_t h = dropConn[i];
+    portENTER_CRITICAL(&nmux);
+    dropConn[i] = dropConn[--dropCount];
+    dropAt[i] = dropAt[dropCount];
+    bool keep = isNative(h) || hasHid(h);   // it handshook again / it's the pad link after all
+    portEXIT_CRITICAL(&nmux);
+    bool alive = false;
+    for (uint16_t p : peers) alive |= p == h;
+    if (alive && !keep) {
+      event("closed the game's old link");
+      srv->disconnect(h);
+    }
+  }
 
   // Track the connection interval the host actually granted.
   uint16_t first = BLE_HS_CONN_HANDLE_NONE;
@@ -399,6 +452,8 @@ void housekeeping() {
     portENTER_CRITICAL(&nmux);
     for (int k = 0; k < inputSubCount; k++)
       if (inputSubs[k] == known[i]) inputSubs[k--] = inputSubs[--inputSubCount];
+    for (int k = 0; k < hidSubCount; k++)
+      if (hidSubs[k] == known[i]) hidSubs[k--] = hidSubs[--hidSubCount];
     portEXIT_CRITICAL(&nmux);
     known[i] = known[knownCount - 1];
     memcpy(knownAddr[i], knownAddr[knownCount - 1], sizeof(knownAddr[0]));
@@ -587,6 +642,7 @@ int peers(PeerInfo *out, int max) {
     p.quietMs = i >= 0 ? now - nativeSeen[i] : 0;
     p.inputSub = false;
     for (int k = 0; k < inputSubCount; k++) p.inputSub |= inputSubs[k] == h;
+    p.hid = hasHid(h);
     portEXIT_CRITICAL(&nmux);
   }
   return n;
@@ -611,3 +667,16 @@ int connections() {
 }
 
 }  // namespace BleBridge
+
+// Called by the (patched) Xbox HID lib when a connection (un)subscribes to the
+// pad's reports.
+void divaHidSubscribed(uint16_t connHandle, uint16_t subValue) {
+  using namespace BleBridge;
+  portENTER_CRITICAL(&nmux);
+  int at = -1;
+  for (int i = 0; i < hidSubCount; i++)
+    if (hidSubs[i] == connHandle) at = i;
+  if (subValue && at < 0 && hidSubCount < MAX_SUBS) hidSubs[hidSubCount++] = connHandle;
+  if (!subValue && at >= 0) hidSubs[at] = hidSubs[--hidSubCount];
+  portEXIT_CRITICAL(&nmux);
+}

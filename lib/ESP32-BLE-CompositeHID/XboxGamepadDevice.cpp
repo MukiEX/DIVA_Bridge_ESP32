@@ -37,8 +37,13 @@ void XboxGamepadCallbacks::onRead(NimBLECharacteristic* pCharacteristic, NimBLEC
     ESP_LOGD(LOG_TAG, "XboxGamepadCallbacks::onRead");
 }
 
+// DIVA Bridge patch: tell the app which connections subscribe to the pad's
+// reports (those are the Xbox pad links; others may be game-only links).
+extern void divaHidSubscribed(uint16_t connHandle, uint16_t subValue) __attribute__((weak));
+
 void XboxGamepadCallbacks::onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue)
 {
+    if (divaHidSubscribed) divaHidSubscribed(connInfo.getConnHandle(), subValue);
     ESP_LOGD(LOG_TAG, "XboxGamepadCallbacks::onSubscribe");
 }
 

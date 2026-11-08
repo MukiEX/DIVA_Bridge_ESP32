@@ -59,6 +59,7 @@ struct PeerInfo {
   char addr[18];
   bool native;        // did the DIVA handshake
   bool inputSub;      // subscribed to INPUT notifications
+  bool hid;           // subscribed to the Xbox pad's reports (the gamepad link)
   uint8_t proto;      // protocol it handshook with
   uint32_t quietMs;   // since its last CONTROL write (handshake / HI)
   float intervalMs;

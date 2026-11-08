@@ -522,7 +522,8 @@ void drawBluetooth(int sentPerSec, uint32_t failed) {
           snprintf(line, sizeof(line), "Handshake ACTIVE (v%u, no check-ins)", pi[i].proto);
         text(x + 12, y, line, C_GREEN, u8g2_font_helvB10_tr);
       } else {
-        text(x + 12, y, "No handshake (Xbox pad only)", C_AMBER, u8g2_font_helvB10_tr);
+        text(x + 12, y, pi[i].hid ? "No handshake (Xbox pad link)" : "No handshake (idle link)", C_AMBER,
+             u8g2_font_helvB10_tr);
       }
       y += 18;
       snprintf(line, sizeof(line), "Input %s  -  %.2f ms  -  MTU %u",
