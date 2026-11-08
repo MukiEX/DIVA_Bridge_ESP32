@@ -107,6 +107,7 @@ with sync_playwright() as p:
     # 1. Fill settings, install from the Install tab without connecting first
     pg.click("[data-tab=settings]")
     pg.fill("#ssid", "Home Net 5G"); pg.fill("#pass", "p@ss word=1")
+    assert "auto" in pg.eval_on_selector_all("#radio option", "els => els.map(e => e.value)")
     pg.select_option("#radio", "wifi"); pg.check("#led_reverse"); pg.check("#unpair")
     pg.click("[data-tab=install]")
     js(f"window.__fake.bootLog = {json.dumps(BOOT_OK)}; window.__fake.statusUsb = {json.dumps(USB)}")

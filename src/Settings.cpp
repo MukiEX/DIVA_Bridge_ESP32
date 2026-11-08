@@ -17,7 +17,7 @@ void (*statusPrinter)() = nullptr;
 bool dirty = false;
 
 const char *radioName(Radio r) {
-  return r == Radio::WifiOnly ? "wifi" : r == Radio::BleOnly ? "ble" : "both";
+  return r == Radio::WifiOnly ? "wifi" : r == Radio::BleOnly ? "ble" : r == Radio::Auto ? "auto" : "both";
 }
 const char *sliderName(SliderMode s) {
   return s == SliderMode::Position ? "position" : s == SliderMode::Off ? "off" : "motion";
@@ -29,7 +29,7 @@ void load() {
   vals.pass = prefs.getString("pass", "");
   vals.name = prefs.getString("name", "DIVA Bridge");
   vals.port = prefs.getUShort("port", 45710);
-  vals.radio = (Radio)prefs.getUChar("radio", 0);
+  vals.radio = (Radio)prefs.getUChar("radio", (uint8_t)Radio::Auto);
   vals.slider = (SliderMode)prefs.getUChar("slider", 0);
   vals.sliderReverse = prefs.getBool("slider_rev", false);
   vals.ledReverse = prefs.getBool("led_rev", false);
@@ -104,7 +104,8 @@ void help() {
       "  set pass <password>     Wi-Fi password (rest of the line; empty = open)\n"
       "  set name <text>         Bluetooth name / mDNS host (default DIVA Bridge)\n"
       "  set port <n>            bridge TCP port (default 45710)\n"
-      "  set radio both|wifi|ble both radios, or one (wifi = lowest Wi-Fi latency)\n"
+      "  set radio auto|both|wifi|ble  auto = both, Wi-Fi paused during Bluetooth games;\n"
+      "                          or one radio (wifi = lowest Wi-Fi latency)\n"
       "  set slider motion|position|off   slider on the Xbox fallback pad\n"
       "  set slider_reverse 0|1  flip the touch direction (ZhouSensor/HORI)\n"
       "  set led_reverse 0|1     flip the slider LED order (ZhouSensor)\n"
@@ -142,6 +143,7 @@ bool setKey(const String &key, const String &value, bool quiet = false) {
     if (value == "both") vals.radio = Radio::Both;
     else if (value == "wifi") vals.radio = Radio::WifiOnly;
     else if (value == "ble") vals.radio = Radio::BleOnly;
+    else if (value == "auto") vals.radio = Radio::Auto;
     else ok = false;
   } else if (key == "slider") {
     if (value == "motion") vals.slider = SliderMode::Motion;

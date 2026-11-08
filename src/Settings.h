@@ -13,7 +13,10 @@
 
 namespace Settings {
 
-enum class Radio : uint8_t { Both = 0, WifiOnly = 1, BleOnly = 2 };
+// Auto: both radios, but Wi-Fi switches off while a Bluetooth game is in native
+// mode (the S3's one radio then belongs to Bluetooth: no latency spikes) and
+// comes back a few seconds after the game leaves.
+enum class Radio : uint8_t { Both = 0, WifiOnly = 1, BleOnly = 2, Auto = 3 };
 enum class SliderMode : uint8_t { Motion = 0, Position = 1, Off = 2 };
 enum class OtgPower : uint8_t { UsbDev = 0, Battery = 1 };
 
@@ -22,7 +25,7 @@ struct Values {
   String pass;
   String name = "DIVA Bridge";    // BLE name and mDNS host name base
   uint16_t port = 45710;          // TCP port (same default as diva_bridge.py)
-  Radio radio = Radio::Both;
+  Radio radio = Radio::Auto;
   SliderMode slider = SliderMode::Motion;
   bool sliderReverse = false;
   bool ledReverse = false;

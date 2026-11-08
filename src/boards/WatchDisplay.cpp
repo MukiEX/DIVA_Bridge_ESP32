@@ -267,7 +267,7 @@ struct Snapshot {
   char name[24];
   uint8_t pkt[EXT_PACKET_LEN];
   int native, tcp, ble;
-  bool wifiUp;
+  bool wifiUp, wifiPaused;
   char ip[16];
   int battery;
   bool charging;
@@ -449,6 +449,7 @@ void draw(const Snapshot &s) {
   };
   snprintf(line, sizeof(line), "%s.local:%u", NetBridge::hostName().c_str(), cfg.port);
   if (cfg.radio == Settings::Radio::BleOnly) row("Wi-Fi", "off", C_DIM);
+  else if (s.wifiPaused) row("Wi-Fi", "paused (BT game)", C_DIM);
   else if (s.wifiUp) row("Wi-Fi", s.ip, C_TEXT, line);
   else row("Wi-Fi", cfg.ssid.length() ? "connecting..." : "not set up", C_AMBER);
   if (s.native) snprintf(line, sizeof(line), "%d (%d Wi-Fi)", s.native, s.tcp);
@@ -501,6 +502,7 @@ void uiTask(void *) {
     cur.tcp = NetBridge::clients();
     cur.ble = cfg.radio == Settings::Radio::WifiOnly ? 0 : BleBridge::connections();
     cur.wifiUp = WiFi.status() == WL_CONNECTED;
+    cur.wifiPaused = NetBridge::paused();
     snprintf(cur.ip, sizeof(cur.ip), "%s", WiFi.localIP().toString().c_str());
     cur.battery = battery;
     cur.charging = isCharging;

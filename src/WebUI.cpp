@@ -23,7 +23,7 @@ namespace {
 WebServer *server = nullptr;
 
 const char *radioName(Settings::Radio r) {
-  return r == Settings::Radio::WifiOnly ? "wifi" : r == Settings::Radio::BleOnly ? "ble" : "both";
+  return r == Settings::Radio::WifiOnly ? "wifi" : r == Settings::Radio::BleOnly ? "ble" : r == Settings::Radio::Auto ? "auto" : "both";
 }
 
 /** JSON string escape (names and SSIDs can contain anything). */

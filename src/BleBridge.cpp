@@ -457,6 +457,8 @@ float intervalMs() { return stats.intervalUnits * 1.25f; }
 uint32_t notifySent() { return stats.sent; }
 uint32_t notifyFailed() { return stats.failed; }
 
+int nativeBleClients() { return nativeCount; }
+
 int connections() {
   NimBLEServer *srv = s_server();
   return srv ? srv->getConnectedCount() : 0;

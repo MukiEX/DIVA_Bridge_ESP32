@@ -167,6 +167,11 @@ Restarting the game, or the bridge, needs no replug:
 ## Latency notes
 
 - Wi-Fi and Bluetooth share one radio. With both on, ESP-IDF requires Wi-Fi modem sleep, which adds jitter to Wi-Fi round trips. If you only use Wi-Fi native mode, `set radio wifi` keeps Wi-Fi fully awake. That also turns off the Xbox pad.
+- The radio sharing works the other way too: Wi-Fi traffic (the web page, mDNS, the router's own chatter) delays Bluetooth, which shows up as lag spikes in Bluetooth native mode. The default, `radio=auto`, avoids that:
+  - Both radios are on, but while a Bluetooth game (or the PC bridge over Bluetooth) is in native mode, Wi-Fi switches off completely.
+  - Wi-Fi comes back 4 s after the game leaves, whether it said goodbye or stopped checking in.
+  - The watch screen shows *Wi-Fi: paused (BT game)* meanwhile. The web page is unreachable until the game leaves.
+  - `radio=both` keeps Wi-Fi on regardless, and `radio=ble` turns it off for good.
 - Bluetooth asks for a 7.5 ms connection interval. The host decides what it actually gets; the log and the board's Status tab show the interval granted.
 - **No lost taps.** Each reader has its own *press latch*: a Wi-Fi client between two polls, or the Bluetooth sender between two notifications. A press that starts and ends in between still shows up once. A notification that can't be sent is retried with its presses kept. Over Bluetooth, state also arrives in bursts once per connection event, so a tap's press and release can land microseconds apart. `diva_bridge.py --device ble` therefore keeps every press visible for at least 20 ms (`--ble-min-hold`), so the game, which reads the state once a frame, always sees it.
 - **Measuring it:** the ESP32 counts every press, and the count travels with each Bluetooth update. Every 30 s, `diva_bridge.py` logs `BLE link: N updates/s, longest gap X ms; presses A of B (lost L); short taps held H`. `lost` above 0 means presses never reached the PC. `short taps held` counts taps that would have been missed without the minimum hold.

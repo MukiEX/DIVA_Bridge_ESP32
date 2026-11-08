@@ -2,6 +2,7 @@
 
 #include <ESPmDNS.h>
 #include <WiFi.h>
+#include "BleBridge.h"
 #include <lwip/sockets.h>
 
 #include <atomic>
@@ -87,7 +88,48 @@ void serverTask(void *) {
   }
 }
 
+// radio=auto: Wi-Fi off while a Bluetooth game is in native mode.
+volatile bool wifiPaused = false;
+constexpr uint32_t RESUME_AFTER_MS = 4000;   // the game must be gone this long (re-handshakes blink)
+
+void pauseWifi() {
+  wifiPaused = true;
+  Serial.println("[Net] Bluetooth game playing: Wi-Fi paused (radio=auto)");
+  if (mdnsUp) {
+    MDNS.end();
+    mdnsUp = false;
+  }
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+}
+
+void resumeWifi() {
+  auto &s = Settings::get();
+  Serial.println("[Net] Bluetooth game gone: Wi-Fi back on");
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(hostName().c_str());
+  WiFi.setAutoReconnect(true);
+  WiFi.setSleep(true);
+  WiFi.begin(s.ssid.c_str(), s.pass.c_str());
+  wifiPaused = false;
+}
+
+void autoRadioTask(void *) {
+  uint32_t lastGame = 0;
+  while (true) {
+    vTaskDelay(pdMS_TO_TICKS(100));
+    if (BleBridge::nativeBleClients() > 0) {
+      lastGame = millis();
+      if (!wifiPaused) pauseWifi();
+    } else if (wifiPaused && millis() - lastGame > RESUME_AFTER_MS) {
+      resumeWifi();
+    }
+  }
+}
+
 void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (wifiPaused) return;   // our own switch-off, not news
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       Serial.printf("[Net] Wi-Fi connected: %s  (set DivallerBridge.ini host=%s or %s.local; "
@@ -147,10 +189,12 @@ void begin() {
   WiFi.setAutoReconnect(true);
   // Only without Bluetooth can Wi-Fi stay fully awake (the radios share
   // time otherwise, and modem sleep is mandatory with BLE on).
-  WiFi.setSleep(s.radio == Settings::Radio::Both);
+  WiFi.setSleep(s.radio != Settings::Radio::WifiOnly);
   WiFi.begin(s.ssid.c_str(), s.pass.c_str());
   Serial.printf("[Net] connecting to '%s'...\n", s.ssid.c_str());
   xTaskCreatePinnedToCore(serverTask, "net_server", 4096, nullptr, 3, nullptr, 1);
+  if (s.radio == Settings::Radio::Auto)
+    xTaskCreatePinnedToCore(autoRadioTask, "net_auto", 3072, nullptr, 1, nullptr, 0);
   WebUI::begin();
 }
 
@@ -159,6 +203,7 @@ String describe() {
     if (Settings::get().radio == Settings::Radio::BleOnly) return "off (radio=ble)";
     return "not set up";
   }
+  if (wifiPaused) return "paused while a Bluetooth game plays (radio=auto)";
   if (WiFi.status() == WL_CONNECTED)
     return "connected " + WiFi.localIP().toString() + " (" + hostName() + ".local:" +
            String(Settings::get().port) + ", RSSI " + String(WiFi.RSSI()) + ")";
@@ -166,5 +211,7 @@ String describe() {
 }
 
 int clients() { return clientCount; }
+
+bool paused() { return wifiPaused; }
 
 }  // namespace NetBridge

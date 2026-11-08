@@ -51,4 +51,7 @@ uint32_t notifyFailed();
 /** Number of connected BLE centrals. */
 int connections();
 
+/** Bluetooth clients currently in native mode (games / the PC bridge). */
+int nativeBleClients();
+
 }  // namespace BleBridge

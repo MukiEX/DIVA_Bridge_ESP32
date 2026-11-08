@@ -143,7 +143,8 @@
         <label for="port">Bridge port</label><input id="port" type="number" min="1" max="65535">
         <label for="radio">Radios</label>
         <select id="radio">
-          <option value="both">Wi-Fi + Bluetooth</option>
+          <option value="auto">Wi-Fi + Bluetooth, Wi-Fi pauses during Bluetooth games (recommended)</option>
+          <option value="both">Wi-Fi + Bluetooth (both always on)</option>
           <option value="wifi">Wi-Fi only (lowest Wi-Fi latency, no Xbox pad)</option>
           <option value="ble">Bluetooth only (this page goes away)</option>
         </select>
@@ -390,7 +391,7 @@ function showState() {
     ["Wi-Fi", `${st.ssid} — ${st.ip}, ${st.rssi} dBm`],
     ["Host name", host],
     ["Bridge port", st.port],
-    ["Radios", { both: "Wi-Fi + Bluetooth", wifi: "Wi-Fi only", ble: "Bluetooth only" }[st.radio]],
+    ["Radios", { auto: "Wi-Fi + Bluetooth (Wi-Fi pauses during Bluetooth games)", both: "Wi-Fi + Bluetooth", wifi: "Wi-Fi only", ble: "Bluetooth only" }[st.radio]],
     ["Bluetooth", `${st.btname} — ${st.ble} connected`],
     ["Games (native)", `${st.native} (${st.tcp} over Wi-Fi)`],
     ["Reports", `${st.reports} total, ${rate.toFixed(0)}/s`],

@@ -22,7 +22,7 @@ state = {"ctl": "divaller", "reports": 0, "screen": False}
 USB = [{"addr": 1, "parent": 0, "port": 0, "vid": "1A40", "pid": "0101", "cls": 9, "speed": "full", "product": "USB 2.0 Hub", "mfr": "", "role": "hub"},
        {"addr": 2, "parent": 1, "port": 2, "vid": "0E8F", "pid": "2213", "cls": 0, "speed": "full", "product": "Divaller", "mfr": "DJ DAO", "role": "controller: Divaller"}]
 posts = {"leds": [], "settings": [], "bg": [], "bgdel": 0}
-settings = {"ssid": "Home Net", "pass": "", "name": "DIVA Bridge", "port": "45710", "radio": "both",
+settings = {"ssid": "Home Net", "pass": "", "name": "DIVA Bridge", "port": "45710", "radio": "auto",
             "slider": "motion", "slider_reverse": "0", "led_reverse": "0", "leds": "1", "xbox": "seriesx",
             "otg_power": "usb", "brightness": "200", "screen_timeout": "60", "pass_set": True}
 

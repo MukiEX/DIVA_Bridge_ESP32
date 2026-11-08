@@ -32,4 +32,7 @@ String hostName();
 /** Connected TCP clients. */
 int clients();
 
+/** radio=auto: Wi-Fi is switched off because a Bluetooth game is playing. */
+bool paused();
+
 }  // namespace NetBridge
