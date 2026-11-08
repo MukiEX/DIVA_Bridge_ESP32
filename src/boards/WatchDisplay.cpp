@@ -39,6 +39,8 @@ Arduino_DataBus *bus = nullptr;
 Arduino_CO5300 *panel = nullptr;
 PsCanvas *gfx = nullptr;
 uint16_t *background = nullptr;  // WIDTH*HEIGHT RGB565, PSRAM
+uint16_t *base = nullptr;        // last full frame without the live widgets (PSRAM)
+uint16_t *strip = nullptr;       // DMA-able bounce buffer for partial pushes
 
 volatile int battery = -1;
 volatile bool isCharging = false;
@@ -282,6 +284,128 @@ struct Layout {
 constexpr Layout PORTRAIT = {64, 44, 74, 200, 104, 86, 124, 34, 214, 34, 266, 286, 180, 1, 314, 30, 128, 26};
 constexpr Layout LANDSCAPE = {56, 40, 64, 184, 92, 74, 106, 32, 186, 30, 238, 256, 118, 2, 282, 30, 104, 26};
 
+// ------------------------------------------------------------- live widgets
+// The controller widgets (L/FN pills, slider, face buttons, extra buttons) change
+// with every touch; everything else changes rarely. A full frame keeps a copy of
+// itself without the widgets ("base"), so an input change only restores and
+// redraws the widgets that changed and pushes those rectangles to the panel -
+// a few KB instead of the whole 400 KB frame.
+enum : uint8_t { W_PILLS = 1, W_SLIDER = 2, W_FACES = 4, W_EXT = 8, W_ALL = 15 };
+struct Rect { int x, y, w, h; };
+
+const Layout &layout() { return lw > lh ? LANDSCAPE : PORTRAIT; }
+
+Rect widgetRect(uint8_t w) {
+  const Layout &L = layout();
+  int m = PAD + 2;
+  switch (w) {
+    case W_PILLS: return {lw - 28 - 200 - m, L.pillY - m, 200 + 2 * m, 24 + 2 * m};
+    case W_SLIDER: return {28 - 4 - m, L.sliderY - 4 - m, lw - 56 + 8 + 2 * m, L.sliderH + 8 + 2 * m};
+    case W_FACES: return {14, L.faceY - L.faceR - m, lw - 28, 2 * (L.faceR + m)};
+    default: return {14, L.extY - 18, lw - 28, 26};
+  }
+}
+
+uint8_t widgetChanges(const uint8_t *a, const uint8_t *b) {
+  Decoded x = decode(a), y = decode(b);
+  const uint32_t pills = 1u << BTN_L1 | 1u << BTN_L2 | 1u << BTN_L3 | 1u << BTN_FN;
+  uint8_t m = 0;
+  if ((x.pressed ^ y.pressed) & pills) m |= W_PILLS;
+  if ((x.pressed ^ y.pressed) & ~pills) m |= W_FACES;
+  if (x.sensors != y.sensors) m |= W_SLIDER;
+  if (a[24] != b[24] || a[25] != b[25]) m |= W_EXT;
+  return m;
+}
+
+void drawWidgets(const Snapshot &s, uint8_t which) {
+  const Layout &L = layout();
+  Decoded d = decode(s.pkt);
+  uint16_t ext = s.pkt[24] | s.pkt[25] << 8;
+  if (which & W_PILLS) {
+    const char *small[4] = {"L1", "L2", "L3", "FN"};
+    const int bits[4] = {BTN_L1, BTN_L2, BTN_L3, BTN_FN};
+    for (int i = 0; i < 4; i++)
+      pill(lw - 28 - (4 - i) * 50, L.pillY, small[i], d.pressed >> bits[i] & 1, i == 3 ? C_AMBER : C_PINK);
+  }
+  if (which & W_SLIDER) {
+    const int sx = 28, sy = L.sliderY, sw = lw - 56, sh = L.sliderH;
+    itemBox(sx - 4, sy - 4, sw + 8, sh + 8, 8);
+    gfx->drawRoundRect(sx - 4, sy - 4, sw + 8, sh + 8, 8, rgb(0x2B, 0x6E, 0x78));
+    for (int i = 0; i < 32; i++) {
+      int x0 = sx + i * sw / 32, x1 = sx + (i + 1) * sw / 32;
+      bool on = d.sensors >> i & 1;
+      gfx->fillRect(x0 + 1, sy, x1 - x0 - 2, sh, on ? C_CYAN : (i % 8 ? rgb(0x1E, 0x2A, 0x30) : rgb(0x26, 0x36, 0x3D)));
+    }
+  }
+  if (which & W_FACES) {
+    const int keys[4] = {BTN_TRIANGLE, BTN_SQUARE, BTN_CROSS, BTN_CIRCLE};
+    const uint16_t colors[4] = {C_GREEN, C_PINK, C_BLUE, C_RED};
+    const int r = L.faceR, span = lw - 56 - 2 * (r + 8);
+    for (int i = 0; i < 4; i++) {
+      int cx = 28 + r + 8 + i * span / 3, cy = L.faceY;
+      bool on = d.pressed >> keys[i] & 1;
+      if (outline) shadeCircle(cx, cy, r + PAD);
+      if (on) gfx->fillCircle(cx, cy, r, colors[i]);
+      for (int t = 0; t < 3; t++) gfx->drawCircle(cx, cy, r - t, colors[i]);
+      symbol(i, cx, cy, r / 2, on ? 0xFFFF : colors[i]);
+    }
+  }
+  if ((which & W_EXT) && ext) {
+    char e[48] = "";
+    const char *names[] = {"Up", "Dn", "Lt", "Rt", "LB", "RB", "LT", "RT", "LS", "RS"};
+    for (int i = 0; i < 10; i++)
+      if (ext >> i & 1) {
+        strcat(e, names[i]);
+        strcat(e, " ");
+      }
+    e[strlen(e) - 1] = 0;
+    text(lw / 2, L.extY, e, C_AMBER, u8g2_font_helvB10_tr, -1);
+  }
+}
+
+/** Logical rectangle -> panel (native) rectangle, clipped and even-aligned (CO5300). */
+Rect toNative(Rect r) {
+  int x0 = max(0, r.x), y0 = max(0, r.y), x1 = min(lw, r.x + r.w) - 1, y1 = min(lh, r.y + r.h) - 1;
+  int a = fbIndex(x0, y0), b = fbIndex(x1, y1);
+  int ax = a % WIDTH, ay = a / WIDTH, bx = b % WIDTH, by = b / WIDTH;
+  int nx0 = min(ax, bx) & ~1, ny0 = min(ay, by) & ~1;
+  int nx1 = max(ax, bx) | 1, ny1 = max(ay, by) | 1;
+  nx1 = min(nx1, WIDTH - 1);
+  ny1 = min(ny1, HEIGHT - 1);
+  return {nx0, ny0, nx1 - nx0 + 1, ny1 - ny0 + 1};
+}
+
+constexpr int STRIP_PX = 4096;
+
+/** Copy a native rectangle of `from` into the framebuffer. */
+void restoreNative(const Rect &n, const uint16_t *from) {
+  uint16_t *fb = gfx->getFramebuffer();
+  for (int y = n.y; y < n.y + n.h; y++) memcpy(fb + y * WIDTH + n.x, from + y * WIDTH + n.x, n.w * 2);
+}
+
+/** Send a native rectangle of the framebuffer to the panel. */
+void pushNative(const Rect &n) {
+  uint16_t *fb = gfx->getFramebuffer();
+  int rows = max(1, STRIP_PX / n.w) & ~1;
+  if (!rows) rows = 2;
+  for (int y = n.y; y < n.y + n.h; y += rows) {
+    int h = min(rows, n.y + n.h - y);
+    for (int i = 0; i < h; i++) memcpy(strip + i * n.w, fb + (y + i) * WIDTH + n.x, n.w * 2);
+    panel->draw16bitRGBBitmap(n.x, y, strip, n.w, h);
+  }
+}
+
+/** Input-only change: redraw just the widgets that changed. */
+void drawPartial(const Snapshot &s, uint8_t which) {
+  for (uint8_t w = 1; w <= W_EXT; w <<= 1) {
+    if (!(which & w)) continue;
+    Rect n = toNative(widgetRect(w));
+    restoreNative(n, base);
+    drawWidgets(s, w);
+    pushNative(n);
+  }
+}
+
 void draw(const Snapshot &s) {
   memcpy(gfx->getFramebuffer(), background, WIDTH * HEIGHT * 2);
   auto &cfg = Settings::get();
@@ -300,46 +424,7 @@ void draw(const Snapshot &s) {
     text(lw / 2, my + 16, "Plug one into the USB-C port", C_DIM, u8g2_font_helvR10_tr, -1);
     text(lw / 2, my + 34, "(through a powered hub)", C_DIM, u8g2_font_helvR10_tr, -1);
   } else {
-    Decoded d = decode(s.pkt);
-    uint16_t ext = s.pkt[24] | s.pkt[25] << 8;
     text(28, L.nameY, s.name, C_TEXT, u8g2_font_helvB14_tr);
-    // L1 / L2 / L3 / FN
-    const char *small[4] = {"L1", "L2", "L3", "FN"};
-    const int bits[4] = {BTN_L1, BTN_L2, BTN_L3, BTN_FN};
-    for (int i = 0; i < 4; i++)
-      pill(lw - 28 - (4 - i) * 50, L.pillY, small[i], d.pressed >> bits[i] & 1, i == 3 ? C_AMBER : C_PINK);
-    // Slider
-    const int sx = 28, sy = L.sliderY, sw = lw - 56, sh = L.sliderH;
-    itemBox(sx - 4, sy - 4, sw + 8, sh + 8, 8);
-    gfx->drawRoundRect(sx - 4, sy - 4, sw + 8, sh + 8, 8, rgb(0x2B, 0x6E, 0x78));
-    for (int i = 0; i < 32; i++) {
-      int x0 = sx + i * sw / 32, x1 = sx + (i + 1) * sw / 32;
-      bool on = d.sensors >> i & 1;
-      gfx->fillRect(x0 + 1, sy, x1 - x0 - 2, sh, on ? C_CYAN : (i % 8 ? rgb(0x1E, 0x2A, 0x30) : rgb(0x26, 0x36, 0x3D)));
-    }
-    // Face buttons
-    const int keys[4] = {BTN_TRIANGLE, BTN_SQUARE, BTN_CROSS, BTN_CIRCLE};
-    const uint16_t colors[4] = {C_GREEN, C_PINK, C_BLUE, C_RED};
-    const int r = L.faceR, span = lw - 56 - 2 * (r + 8);
-    for (int i = 0; i < 4; i++) {
-      int cx = 28 + r + 8 + i * span / 3, cy = L.faceY;
-      bool on = d.pressed >> keys[i] & 1;
-      if (outline) shadeCircle(cx, cy, r + PAD);
-      if (on) gfx->fillCircle(cx, cy, r, colors[i]);
-      for (int t = 0; t < 3; t++) gfx->drawCircle(cx, cy, r - t, colors[i]);
-      symbol(i, cx, cy, r / 2, on ? 0xFFFF : colors[i]);
-    }
-    if (ext) {
-      char e[48] = "";
-      const char *names[] = {"Up", "Dn", "Lt", "Rt", "LB", "RB", "LT", "RT", "LS", "RS"};
-      for (int i = 0; i < 10; i++)
-        if (ext >> i & 1) {
-          strcat(e, names[i]);
-          strcat(e, " ");
-        }
-      e[strlen(e) - 1] = 0;
-      text(lw / 2, L.extY, e, C_AMBER, u8g2_font_helvB10_tr, -1);
-    }
   }
 
   // Status card: one column (portrait) or two (landscape)
@@ -386,12 +471,14 @@ void draw(const Snapshot &s) {
   panelBox(0, lh - L.footH, lw, L.footH);
   text(lw / 2, lh - 8, line, C_DIM, u8g2_font_helvR10_tr, -1);
 
+  if (base) memcpy(base, gfx->getFramebuffer(), WIDTH * HEIGHT * 2);
+  if (s.present) drawWidgets(s, W_ALL);
   gfx->flush();
 }
 
 void uiTask(void *) {
   Snapshot cur = {}, last = {};
-  uint32_t lastDraw = 0, lastActivity = millis(), lastBattery = 0, lastRate = 0, lastReports = 0;
+  uint32_t lastDraw = 0, lastPartial = 0, lastRateShown = 0, lastActivity = millis(), lastBattery = 0, lastRate = 0, lastReports = 0;
   int rate = 0;
   bool dimmed = false, firstDraw = true;
   auto &cfg = Settings::get();
@@ -417,7 +504,14 @@ void uiTask(void *) {
     snprintf(cur.ip, sizeof(cur.ip), "%s", WiFi.localIP().toString().c_str());
     cur.battery = battery;
     cur.charging = isCharging;
-    cur.rate = rate;
+    // the report rate is the only status that ticks by itself: don't let it force a
+    // full redraw while someone is playing (it would hitch the live widgets)
+    if (now - lastActivity > 400 || now - lastRateShown > 5000) {
+      cur.rate = rate;
+      lastRateShown = now;
+    } else {
+      cur.rate = last.rate;
+    }
 
     bool inputChanged = memcmp(cur.pkt, last.pkt, sizeof(cur.pkt)) != 0 || cur.present != last.present;
     bool touch = touched();
@@ -430,18 +524,28 @@ void uiTask(void *) {
       panel->setBrightness(max(4, cfg.brightness / 16));  // dim, not off: AMOLED, keep it gentle
       dimmed = true;
     }
+    // Only the controller's buttons/slider moved: partial update, as often as every 8 ms.
+    Snapshot same = cur;
+    memcpy(same.pkt, last.pkt, sizeof(same.pkt));
+    bool onlyInput = !firstDraw && !redrawAll && base && strip && cur.present && last.present &&
+                     memcmp(&same, &last, sizeof(same)) == 0;
     bool changed = firstDraw || inputChanged || memcmp(&cur, &last, sizeof(cur)) != 0;
     if (redrawAll) {
       redrawAll = false;
       changed = true;
     }
-    if ((changed && now - lastDraw >= 33) || now - lastDraw >= 1000) {
+    if (onlyInput && inputChanged && now - lastPartial >= 8) {
+      drawPartial(cur, widgetChanges(cur.pkt, last.pkt));
+      last = cur;
+      lastPartial = now;
+    } else if ((changed && !onlyInput && now - lastDraw >= 33) ||
+               (now - lastDraw >= 5000 && now - lastActivity > 400)) {   // occasional full refresh
       draw(cur);
       last = cur;
-      lastDraw = now;
+      lastDraw = lastPartial = now;
       firstDraw = false;
     }
-    vTaskDelay(pdMS_TO_TICKS(15));
+    vTaskDelay(pdMS_TO_TICKS(4));
   }
 }
 
@@ -491,6 +595,8 @@ void begin() {
   panel->setBrightness(Settings::get().brightness);
   loadBackground();
   if (!background) return;
+  base = (uint16_t *)heap_caps_malloc(WIDTH * HEIGHT * 2, MALLOC_CAP_SPIRAM);
+  strip = (uint16_t *)heap_caps_malloc(STRIP_PX * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
   xTaskCreatePinnedToCore(uiTask, "watch_ui", 6144, nullptr, 1, nullptr, 1);
 }
 

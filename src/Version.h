@@ -6,4 +6,4 @@
  */
 #pragma once
 
-#define DIVA_BRIDGE_VERSION "0.5.3"
+#define DIVA_BRIDGE_VERSION "0.5.4"
