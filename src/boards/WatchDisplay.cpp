@@ -59,7 +59,7 @@ constexpr uint16_t C_OFF = rgb(0x2A, 0x2C, 0x34);
 // out in "logical" coordinates (lw x lh, swapped for 90/270) and gfx's own
 // rotation maps drawing calls; shade() and the background copy use the same
 // mapping as Arduino_Canvas::writePixelPreclipped.
-int rot = 0;            // 0-3 (quarter turns)
+int rot = 0;            // 0-3 (quarter turns) - set in begin()
 int lw = WIDTH, lh = HEIGHT;
 
 inline int fbIndex(int x, int y) {
@@ -246,9 +246,22 @@ void i2cWrite(uint8_t addr, uint8_t reg, uint8_t v) {
   Wire.endTransmission();
 }
 
-bool touched() {
-  uint8_t n;
-  return i2cRead(FT3168_ADDR, 0x02, &n, 1) && (n & 0x0F) > 0 && (n & 0x0F) < 3;
+/** First touch point in logical (rotated) coordinates; false when not touched. */
+bool readTouch(int &x, int &y) {
+  uint8_t r[5];
+  if (!i2cRead(FT3168_ADDR, 0x02, r, 5)) return false;
+  int count = r[0] & 0x0F;
+  if (count < 1 || count > 2) return false;
+  int nx = (r[1] & 0x0F) << 8 | r[2], ny = (r[3] & 0x0F) << 8 | r[4];
+  nx = constrain(nx, 0, WIDTH - 1);
+  ny = constrain(ny, 0, HEIGHT - 1);
+  switch (rot) {   // inverse of fbIndex()
+    case 1: x = ny; y = WIDTH - 1 - nx; break;
+    case 2: x = WIDTH - 1 - nx; y = HEIGHT - 1 - ny; break;
+    case 3: x = HEIGHT - 1 - ny; y = nx; break;
+    default: x = nx; y = ny;
+  }
+  return true;
 }
 
 void readBattery() {
@@ -406,6 +419,8 @@ void drawPartial(const Snapshot &s, uint8_t which) {
   }
 }
 
+void pageDots();
+
 void draw(const Snapshot &s) {
   memcpy(gfx->getFramebuffer(), background, WIDTH * HEIGHT * 2);
   auto &cfg = Settings::get();
@@ -414,7 +429,8 @@ void draw(const Snapshot &s) {
 
   // Title, centred so the rounded corners don't clip it
   panelBox(0, 0, lw, L.titleH);
-  text(lw / 2, L.titleBase, "DIVA BRIDGE", C_TEXT, u8g2_font_helvB24_tr, -1);
+  text(lw / 2, L.titleBase - 6, "DIVA BRIDGE", C_TEXT, u8g2_font_helvB24_tr, -1);
+  pageDots();
 
   // Controller card
   panelBox(14, L.cardY, lw - 28, L.cardH);
@@ -480,7 +496,109 @@ void draw(const Snapshot &s) {
 // ------------------------------------------------------------- Bluetooth page
 // Tap the screen to switch to it (and back): links, whether each did the DIVA
 // handshake and is still checking in, the input stream, and recent events.
-int page = 0;   // 0 = controller, 1 = Bluetooth
+int page = 0;   // 0 = controller, 1 = paired devices, 2 = Bluetooth status
+char lineBuf[64];
+char *line_buf() { return lineBuf; }
+// ------------------------------------------------------------- pages
+// Swipe left/right to move between pages (they loop): 0 controller, 1 paired
+// devices, 2 Bluetooth status. A touch that wakes a dimmed screen does nothing else.
+constexpr int PAGES = 3;
+
+/** Three dots under the title: which page this is. */
+void pageDots() {
+  const Layout &L = layout();
+  int y = L.titleH - 8;
+  for (int i = 0; i < PAGES; i++) {
+    int cx = lw / 2 + (i - 1) * 14;
+    if (i == page) gfx->fillCircle(cx, y, 3, C_TEXT);
+    else gfx->drawCircle(cx, y, 3, C_DIM);
+  }
+}
+
+// Buttons on the devices page (logical coordinates), for tap hit-testing.
+struct Btn {
+  Rect r;
+  uint8_t action;   // 1 disconnect, 2 forget
+  char addr[18];
+};
+Btn btns[12];
+int nbtn = 0;
+char confirmAddr[18] = "";   // "Forget" tapped once: tap again within 3 s
+uint32_t confirmUntil = 0;
+
+void button(int x, int y, int w, int h, const char *label, uint16_t color, uint8_t action, const char *addr) {
+  itemBox(x, y, w, h, h / 2);
+  gfx->fillRoundRect(x, y, w, h, h / 2, color);
+  bool o = outline;
+  outline = false;
+  text(x + w / 2, y + h / 2 + 5, label, 0x0000, u8g2_font_helvB10_tr, -1);
+  outline = o;
+  if (nbtn < 12) {
+    btns[nbtn].r = {x, y, w, h};
+    btns[nbtn].action = action;
+    snprintf(btns[nbtn].addr, sizeof(btns[nbtn].addr), "%s", addr);
+    nbtn++;
+  }
+}
+
+void drawDevices() {
+  memcpy(gfx->getFramebuffer(), background, WIDTH * HEIGHT * 2);
+  const Layout &L = layout();
+  nbtn = 0;
+  panelBox(0, 0, lw, L.titleH);
+  text(lw / 2, L.titleBase - 6, "DEVICES", C_TEXT, u8g2_font_helvB24_tr, -1);
+  pageDots();
+  BleBridge::BondInfo b[6];
+  int n = BleBridge::bonded(b, 6);
+  int rowH = 74, y0 = L.titleH + 10;
+  int maxRows = (lh - L.footH - 10 - y0) / (rowH + 6);
+  if (!n) {
+    panelBox(14, y0, lw - 28, 90);
+    text(28, y0 + 34, "No paired devices", C_TEXT, u8g2_font_helvB14_tr);
+    text(28, y0 + 58, "Pair \"DIVA Bridge\" in a device's", C_DIM, u8g2_font_helvR10_tr);
+    text(28, y0 + 76, "Bluetooth settings.", C_DIM, u8g2_font_helvR10_tr);
+  }
+  bool confirming = confirmAddr[0] && millis() < confirmUntil;
+  for (int i = 0; i < n && i < maxRows; i++) {
+    int y = y0 + i * (rowH + 6);
+    panelBox(14, y, lw - 28, rowH);
+    text(28, y + 26, b[i].addr, C_TEXT, u8g2_font_helvB14_tr);
+    const char *st = b[i].host ? "connected - in use" : b[i].connected ? "connected" : "not connected";
+    text(28, y + 52, st, b[i].connected ? C_GREEN : C_DIM, u8g2_font_helvR10_tr);
+    int bw = 92, bh = 30, by = y + rowH - bh - 10, bx = lw - 28 - bw;
+    bool sure = confirming && strcmp(confirmAddr, b[i].addr) == 0;
+    button(bx, by, bw, bh, sure ? "Sure?" : "Forget", sure ? C_RED : rgb(0xE0, 0x80, 0x80), 2, b[i].addr);
+    if (b[i].connected) button(bx - 8 - 108, by, 108, bh, "Disconnect", C_AMBER, 1, b[i].addr);
+  }
+  if (n > maxRows) {
+    snprintf(line_buf(), 40, "+%d more", n - maxRows);
+    text(lw / 2, lh - L.footH - 8, line_buf(), C_DIM, u8g2_font_helvR10_tr, -1);
+  }
+  panelBox(0, lh - L.footH, lw, L.footH);
+  text(lw / 2, lh - 8, "swipe for more  -  Forget: tap twice", C_DIM, u8g2_font_helvR10_tr, -1);
+  gfx->flush();
+}
+
+/** A tap on the devices page. Returns true if something changed. */
+bool devicesTap(int x, int y) {
+  for (int i = 0; i < nbtn; i++) {
+    const Rect &r = btns[i].r;
+    if (x < r.x - 6 || x > r.x + r.w + 6 || y < r.y - 6 || y > r.y + r.h + 6) continue;
+    if (btns[i].action == 1) {
+      BleBridge::disconnectDevice(btns[i].addr);
+    } else if (confirmAddr[0] && millis() < confirmUntil && strcmp(confirmAddr, btns[i].addr) == 0) {
+      BleBridge::forgetDevice(btns[i].addr);
+      confirmAddr[0] = 0;
+    } else {
+      snprintf(confirmAddr, sizeof(confirmAddr), "%s", btns[i].addr);
+      confirmUntil = millis() + 3000;
+    }
+    return true;
+  }
+  return false;
+}
+
+
 
 const char *ago(uint32_t ms, char *buf, size_t n) {
   if (ms < 10000) snprintf(buf, n, "%u.%us", (unsigned)(ms / 1000), (unsigned)(ms % 1000 / 100));
@@ -495,7 +613,8 @@ void drawBluetooth(int sentPerSec, uint32_t failed) {
   auto &cfg = Settings::get();
   char line[80], t[16];
   panelBox(0, 0, lw, L.titleH);
-  text(lw / 2, L.titleBase, "BLUETOOTH", C_TEXT, u8g2_font_helvB24_tr, -1);
+  text(lw / 2, L.titleBase - 6, "BLUETOOTH", C_TEXT, u8g2_font_helvB24_tr, -1);
+  pageDots();
   panelBox(14, L.titleH + 8, lw - 28, lh - L.titleH - 8 - L.footH - 8);
   int y = L.titleH + 34, x = 28;
   if (cfg.radio == Settings::Radio::WifiOnly) {
@@ -547,7 +666,7 @@ void drawBluetooth(int sentPerSec, uint32_t failed) {
     if (!ne) text(x, y, "(nothing yet)", C_DIM, u8g2_font_helvR10_tr);
   }
   panelBox(0, lh - L.footH, lw, L.footH);
-  text(lw / 2, lh - 8, "tap the screen to go back", C_DIM, u8g2_font_helvR10_tr, -1);
+  text(lw / 2, lh - 8, "swipe for more pages", C_DIM, u8g2_font_helvR10_tr, -1);
   gfx->flush();
 }
 
@@ -555,7 +674,9 @@ void uiTask(void *) {
   Snapshot cur = {}, last = {};
   uint32_t lastDraw = 0, lastPartial = 0, lastRateShown = 0, lastActivity = millis(), lastBattery = 0, lastRate = 0, lastReports = 0;
   int rate = 0;
-  bool dimmed = false, firstDraw = true, wasTouched = false;
+  bool dimmed = false, firstDraw = true, wasTouched = false, wakeTouch = false;
+  int downX = 0, downY = 0, lastX = 0, lastY = 0;
+  uint32_t downAt = 0, lastDevDraw = 0;
   uint32_t lastBtDraw = 0, lastSent = 0, lastSentAt = 0;
   int sentRate = 0;
   auto &cfg = Settings::get();
@@ -592,13 +713,27 @@ void uiTask(void *) {
     }
 
     bool inputChanged = memcmp(cur.pkt, last.pkt, sizeof(cur.pkt)) != 0 || cur.present != last.present;
-    bool touch = touched();
-    bool tap = touch && !wasTouched;
-    wasTouched = touch;
-    if (tap && !dimmed) {   // a tap that wakes the screen doesn't also flip the page
-      page ^= 1;
-      redrawAll = true;
+    int tx = 0, ty = 0;
+    bool touch = readTouch(tx, ty);
+    if (touch && !wasTouched) {   // finger down
+      downX = lastX = tx;
+      downY = lastY = ty;
+      downAt = now;
+      wakeTouch = dimmed;           // this touch only wakes the screen
+    } else if (touch) {
+      lastX = tx;
+      lastY = ty;
+    } else if (wasTouched && !wakeTouch) {   // finger up: swipe or tap?
+      int dx = lastX - downX, dy = lastY - downY;
+      if (abs(dx) > 60 && abs(dx) > abs(dy) * 3 / 2) {
+        page = (page + (dx < 0 ? 1 : PAGES - 1)) % PAGES;   // swipe left = next
+        redrawAll = true;
+        firstDraw = true;
+      } else if (abs(dx) < 20 && abs(dy) < 20 && now - downAt < 600) {
+        if (page == 1 && devicesTap(downX, downY)) redrawAll = true;
+      }
     }
+    wasTouched = touch;
     if (inputChanged || touch) lastActivity = now;
     uint32_t timeout = cfg.screenTimeout * 1000u;
     if (dimmed && now - lastActivity < 200) {
@@ -608,7 +743,17 @@ void uiTask(void *) {
       panel->setBrightness(max(4, cfg.brightness / 16));  // dim, not off: AMOLED, keep it gentle
       dimmed = true;
     }
-    if (page == 1) {   // Bluetooth page: redraw a few times a second
+    if (page == 1) {   // devices page: redraw twice a second (and after a tap)
+      if (redrawAll || now - lastDevDraw >= 500) {
+        redrawAll = false;
+        drawDevices();
+        lastDevDraw = now;
+      }
+      last = cur;
+      vTaskDelay(pdMS_TO_TICKS(8));
+      continue;
+    }
+    if (page == 2) {   // Bluetooth status page: redraw a few times a second
       if (now - lastSentAt >= 1000) {
         uint32_t sNow = BleBridge::notifySent();
         sentRate = (sNow - lastSent) * 1000 / max<uint32_t>(1, now - lastSentAt);

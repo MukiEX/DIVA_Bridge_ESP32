@@ -38,14 +38,10 @@ One controller at a time. The serial log says so if a ZhouSensor is in the wrong
   - It has **one USB-C port**, and this firmware makes it the controller port, so there's no serial console. To install or change settings from the setup page, hold **BOOT** while plugging it into the PC. Day to day, use its web page.
   - The controller goes on that port through a **powered USB-C hub**. The watch runs from its battery meanwhile, unless the hub also feeds 5 V back up its host lead, which some do. A hub that won't wake without 5 V from the host won't work here.
   - The live controller view updates up to ~120 times a second. Only the parts that changed (slider, face buttons, L/R/FN, extra buttons) are redrawn and sent to the panel, at low priority, so the controller and Bluetooth always come first.
-  - **Tap the screen** to switch between the controller view and a **Bluetooth page**, and tap again to switch back. The Bluetooth page shows:
-    - each connected device, and whether it has done the DIVA handshake;
-    - for protocol 3 clients, how long since they last checked in;
-    - whether the device is subscribed to input, plus its connection interval and MTU;
-    - the stream rate;
-    - recent events: connect and disconnect, handshake, goodbye, and a client that went quiet and was released.
-
-    A tap that wakes a dimmed screen doesn't also switch the page.
+  - **Swipe left or right** to move between three pages. They loop, and dots under the title show which page you're on. A touch that wakes a dimmed screen does nothing else.
+    1. **Controller:** the live tester and status.
+    2. **Devices:** every paired device, shown as connected, connected and in use, or not connected. Each has **Disconnect** and **Forget** buttons; Forget needs a second tap within 3 s.
+    3. **Bluetooth:** each link, the handshake and check-in state, input subscription, interval and MTU, the stream rate, and recent events with disconnect reasons.
   - The screen dims after a set idle time (*Dim screen after*, default 1 min). Touching it, or any controller input, wakes it.
   - *Screen rotation* turns the layout 0/90/180/270°. At 90° and 270° it switches to a landscape layout with the status in two columns.
   - *Text backdrop* is either **panels** (a dark box behind each section) or **outline** (a dark edge that follows each item: capsules round the pills, rings round the face buttons, rounded boxes round text and the slider). *Outline thickness* sets how far it reaches (4–8 px), and *Backdrop darkness* sets how dark either style is (0–100 %).
@@ -172,7 +168,7 @@ Restarting the game, or the bridge, needs no replug:
 - The bridge says `BYE` when it stops normally, and the Xbox pad comes back right away. A force-killed bridge can't say goodbye. Windows also keeps the Bluetooth link up for the gamepad driver. The next bridge's handshake takes over cleanly anyway.
 - **One device at a time** (default, `hosts=one`): like a controller, the board serves one paired device at a time. While one is connected, another paired device that connects is turned away. Links that aren't paired, such as the Quest game's own link next to its gamepad link, are still allowed. `hosts=many` allows several.
 - When a game leaves (says `BYE` or stops checking in), the board closes that game's own link, unless it's the device's paired gamepad link. Android keeps such a link up after the app is gone, and a relaunch that reuses it can stall.
-- The watch's Bluetooth page (tap the screen) shows each link, how many devices are paired, handshake and check-in state, and recent events, including disconnect reasons.
+- The watch's Bluetooth page (swipe to the third page) shows each link, how many devices are paired, handshake and check-in state, and recent events, including disconnect reasons.
 - Every 2 s the bridge (and the Quest recomp) sends `HI`. A client that stops doing that for 6 s is dropped, because it's a game that was killed while the system kept the Bluetooth link up. The Xbox pad comes back and the screen shows *Games: none* again. Only clients that handshake with protocol 3 or later are held to this.
 
 ## Latency notes

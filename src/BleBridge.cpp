@@ -668,6 +668,46 @@ int peers(PeerInfo *out, int max) {
 
 int pairedCount() { return NimBLEDevice::getNumBonds(); }
 
+int bonded(BondInfo *out, int max) {
+  NimBLEServer *srv = s_server();
+  int n = min(max, NimBLEDevice::getNumBonds());
+  std::vector<uint16_t> peers;
+  if (srv) peers = srv->getPeerDevices();
+  for (int i = 0; i < n; i++) {
+    String a = NimBLEDevice::getBondedAddress(i).toString().c_str();
+    BondInfo &b = out[i];
+    snprintf(b.addr, sizeof(b.addr), "%s", a.c_str());
+    b.connected = false;
+    for (uint16_t p : peers)
+      if (a == srv->getPeerInfoByHandle(p).getIdAddress().toString().c_str()) b.connected = true;
+    portENTER_CRITICAL(&nmux);
+    b.host = a == hostId;
+    portEXIT_CRITICAL(&nmux);
+  }
+  return n;
+}
+
+void disconnectDevice(const char *addr) {
+  NimBLEServer *srv = s_server();
+  if (!srv) return;
+  for (uint16_t p : srv->getPeerDevices())
+    if (String(addr) == srv->getPeerInfoByHandle(p).getIdAddress().toString().c_str()) srv->disconnect(p);
+  event("disconnected %s from the screen", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
+}
+
+void forgetDevice(const char *addr) {
+  disconnectDevice(addr);
+  for (int i = 0; i < NimBLEDevice::getNumBonds(); i++) {
+    NimBLEAddress a = NimBLEDevice::getBondedAddress(i);
+    if (String(addr) == a.toString().c_str()) {
+      NimBLEDevice::deleteBond(a);
+      break;
+    }
+  }
+  event("forgot %s", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
+  Serial.printf("[BLE] forgot paired device %s\n", addr);
+}
+
 bool advertising() {
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   return adv && adv->isAdvertising();

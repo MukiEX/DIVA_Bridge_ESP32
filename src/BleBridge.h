@@ -71,6 +71,18 @@ bool advertising();
 /** Devices paired (bonded) with the board. */
 int pairedCount();
 
+struct BondInfo {
+  char addr[18];      // identity address
+  bool connected;     // has a link right now
+  bool host;          // the one device served (one device at a time)
+};
+/** Paired devices, up to max. */
+int bonded(BondInfo *out, int max);
+/** Drop every link from this paired device (it may reconnect by itself). */
+void disconnectDevice(const char *addr);
+/** Disconnect and forget a paired device (it has to pair again). */
+void forgetDevice(const char *addr);
+
 struct Event {
   uint32_t ms;        // millis() when it happened
   char text[44];

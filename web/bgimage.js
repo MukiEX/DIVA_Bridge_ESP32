@@ -65,7 +65,11 @@ function bgPreview(canvas) {
   const TEXT = "#ececf0", DIM = "#9a9ca8", CYAN = "#3fd7ea", GREEN = "#4fd06a", AMBER = "#f2c84b", PINK = "#e45dd0", BLUE = "#5a8cff", RED = "#f05050";
 
   panel(0, 0, W, L.titleH);
-  text(W / 2, L.titleBase, "DIVA BRIDGE", TEXT, "B24", -1);
+  text(W / 2, L.titleBase - 6, "DIVA BRIDGE", TEXT, "B24", -1);
+  for (let i = 0; i < 3; i++) {   // page dots (swipe between pages)
+    ctx.beginPath(); ctx.arc(W / 2 + (i - 1) * 14, L.titleH - 8, 3, 0, 7);
+    if (i === 0) { ctx.fillStyle = TEXT; ctx.fill(); } else { ctx.strokeStyle = DIM; ctx.lineWidth = 1; ctx.stroke(); }
+  }
 
   panel(14, L.cardY, W - 28, L.cardH);
   text(28, L.nameY, "Divaller", TEXT, "B14");
@@ -109,7 +113,7 @@ function bgPreview(canvas) {
   row("Battery", "87% charging", GREEN);
 
   panel(0, H - L.footH, W, L.footH);
-  text(W / 2, H - 8, "v0.5.9  -  hold BOOT while plugging in to flash", DIM, "R10", -1);
+  text(W / 2, H - 8, "v0.6.0  -  hold BOOT while plugging in to flash", DIM, "R10", -1);
 }
 
 /** The partition blob for the current picture, at the current orientation. */
