@@ -155,6 +155,13 @@ python3 diva_bridge.py --device ble --tui         # or pick "DIVA Bridge ESP32 (
 
 Pair the board with the PC first. The bridge connects alongside the system's gamepad driver.
 
+Restarting the game, or the bridge, needs no replug:
+
+- Every time a game connects to the bridge, the bridge does the handshake again, so each game instance starts from a fresh stream.
+- While the bridge is connected, the board sends it something at least once a second, even with the controller idle. If 3 s pass with nothing, the bridge does the handshake again. If that doesn't help, it drops the Bluetooth link and reconnects.
+- On the board, a repeated handshake from the same connection restarts that connection's stream. The old session's taps are dropped, and the status and current input are sent at once.
+- The bridge says `BYE` when it stops normally, and the Xbox pad comes back right away. A force-killed bridge can't say goodbye. Windows also keeps the Bluetooth link up for the gamepad driver. The next bridge's handshake takes over cleanly anyway.
+
 ## Latency notes
 
 - Wi-Fi and Bluetooth share one radio. With both on, ESP-IDF requires Wi-Fi modem sleep, which adds jitter to Wi-Fi round trips. If you only use Wi-Fi native mode, `set radio wifi` keeps Wi-Fi fully awake. That also turns off the Xbox pad.
@@ -180,8 +187,8 @@ Pair the board with the PC first. The bridge connects alongside the system's gam
 
 | UUID suffix | Props | Contents |
 |---|---|---|
-| `…0001` CONTROL | read, write, notify | write `DIVA`+version → native; `BYE` → leave. Read/notify: `[ver, present, kind, native_clients, VID LE, PID LE]` |
-| `…0002` INPUT | read, notify | 24-byte packet + 2 bytes extended buttons (same bytes as an `X` reply) |
+| `…0001` CONTROL | read, write, notify | write `DIVA`+version → native (again → restart the stream); `BYE` → leave. Read/notify: `[ver, present, kind, native_clients, VID LE, PID LE]` |
+| `…0002` INPUT | read, notify | 24-byte packet + 2 bytes extended buttons (same bytes as an `X` reply) + 2-byte press counter. Notified on every change and at least once a second (protocol 2) |
 | `…0003` LEDS | write, write w/o response | 100-byte `DLa` packet (MTU ≥ 103, or a long write) |
 
 `kind`: 1 Divaller, 2 ZhouSensor, 3 HORI NSW-230, 4 HORI PS4-161.
@@ -197,6 +204,7 @@ g++ -std=c++17 -pthread -Ihost_shim -o net_server net_server.cpp \
 python3 test_net.py /path/to/DIVA_Bridge_project/diva_bridge.py        # TCP protocol, as the plugins use it
 g++ -std=c++17 -o config_cli config_cli.cpp ../src/ConfigBlob.cpp
 python3 test_setup_page.py ../dist/DIVA_Bridge_ESP32_Setup.html         # setup page vs. a simulated board (Playwright)
+python3 test_relay_ble.py /path/to/DIVA_Bridge_project/diva_bridge.py  # --device ble relay vs. a simulated board: re-handshake, stall recovery, BYE
 python3 test_webui.py ../web/index.html /tmp/shots                     # on-device page vs. a mock API (Playwright)
 ```
 

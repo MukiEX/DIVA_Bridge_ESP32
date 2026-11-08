@@ -38,6 +38,10 @@ struct {
 } stats;
 TaskHandle_t outTask = nullptr;
 
+// Set by a handshake (new or repeated): the output loop starts the native
+// stream afresh - new tap latch, status and current input sent right away.
+std::atomic<bool> restartStream{false};
+
 // Connections that did the handshake.
 portMUX_TYPE nmux = portMUX_INITIALIZER_UNLOCKED;
 uint16_t nativeConns[MAX_NATIVE];
@@ -94,13 +98,18 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
     NimBLEAttValue v = c->getValue();
     uint16_t h = info.getConnHandle();
     if (v.size() >= 4 && memcmp(v.data(), "DIVA", 4) == 0) {
-      Serial.printf("[BLE] handshake from %s (protocol %d, MTU %d)\n",
+      bool again = isNative(h);
+      Serial.printf("[BLE] handshake from %s (protocol %d, MTU %d)%s\n",
                     info.getAddress().toString().c_str(),
-                    v.size() > 4 ? v.data()[4] : 0, info.getMTU());
+                    v.size() > 4 ? v.data()[4] : 0, info.getMTU(),
+                    again ? " - again: restarting its stream" : "");
       addNative(h);
+      restartStream = true;
+      if (outTask) xTaskNotifyGive(outTask);
       // 7.5 ms connection interval for the lowest latency.
       s_server()->updateConnParams(h, 6, 6, 0, 200);
     } else if (v.size() >= 3 && memcmp(v.data(), "BYE", 3) == 0) {
+      Serial.printf("[BLE] %s said goodbye\n", info.getAddress().toString().c_str());
       removeNative(h);
     }
     uint8_t s[8];
@@ -299,7 +308,7 @@ void housekeeping() {
 }
 
 void outputLoop(void *) {
-  uint32_t lastSeq = ~0u, lastSend = 0, lastHouse = 0;
+  uint32_t lastSeq = ~0u, lastSend = 0, lastHouse = 0, lastNative = 0;
   uint8_t lastStatus[8] = {};
   bool wasNative = false, padDirty = true, nativeDirty = true, padWasUp = false;
   uint8_t pkt[EXT_PACKET_LEN];
@@ -314,6 +323,17 @@ void outputLoop(void *) {
     }
     NimBLEServer *srv = s_server();
     if (!srv) continue;
+
+    if (restartStream.exchange(false)) {
+      DivaState::latchClose(slot);  // forget taps meant for the previous session
+      slot = DivaState::latchOpen();
+      memset(lastStatus, 0, sizeof(lastStatus));  // re-send status
+      nativeDirty = true;                         // and the current input
+      lastSend = 0;
+    }
+    // Heartbeat: a native client hears from us at least every HEARTBEAT_MS,
+    // so a relay can tell a dead stream from an idle controller.
+    if (nativeCount > 0 && now - lastNative >= HEARTBEAT_MS) nativeDirty = true;
 
     // Status changes (controller plugged/unplugged, native count) -> notify.
     uint8_t st[8];
@@ -347,6 +367,7 @@ void outputLoop(void *) {
       if (chInput->notify()) {
         stats.sent++;
         nativeDirty = false;
+        lastNative = now;
       } else {
         // No buffer free (link busy): keep the presses and retry next tick.
         stats.failed++;

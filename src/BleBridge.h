@@ -26,7 +26,10 @@
 
 namespace BleBridge {
 
-constexpr uint8_t PROTOCOL_VERSION = 1;
+// 2: a repeated "DIVA" handshake restarts the stream, and natives get an
+//    input notification at least every HEARTBEAT_MS (a liveness signal).
+constexpr uint8_t PROTOCOL_VERSION = 2;
+constexpr uint32_t HEARTBEAT_MS = 1000;
 
 #define DIVA_BLE_SERVICE_UUID "5e1a0000-d1ba-4b1d-9e00-000000d1ba00"
 #define DIVA_BLE_CONTROL_UUID "5e1a0001-d1ba-4b1d-9e00-000000d1ba00"
