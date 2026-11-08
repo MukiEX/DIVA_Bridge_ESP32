@@ -149,6 +149,11 @@
           <option value="ble">Bluetooth only (this page goes away)</option>
         </select>
         <label for="name">Bluetooth name</label><input id="name" maxlength="28">
+        <label for="hosts">Bluetooth devices</label>
+        <select id="hosts">
+          <option value="one">One at a time, like a controller (recommended)</option>
+          <option value="many">Several at once</option>
+        </select>
         <label for="xbox">Pad profile</label>
         <select id="xbox"><option value="seriesx">Xbox Series X</option><option value="ones">Xbox One S</option></select>
         <label for="slider">Slider on the pad</label>
@@ -507,7 +512,7 @@ window.addEventListener("pagehide", () => {
 });
 
 // --------------------------------------------------------------- settings
-const FIELDS = ["ssid", "port", "radio", "name", "xbox", "slider", "otg_power", "brightness", "screen_timeout", "rotation", "panel_style", "panel_opacity", "panel_pad"];
+const FIELDS = ["ssid", "port", "radio", "name", "hosts", "xbox", "slider", "otg_power", "brightness", "screen_timeout", "rotation", "panel_style", "panel_opacity", "panel_pad"];
 const FLAGS = ["slider_reverse", "led_reverse", "leds"];
 async function loadSettings() {
   try {

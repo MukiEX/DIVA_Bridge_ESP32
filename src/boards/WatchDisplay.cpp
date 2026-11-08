@@ -503,8 +503,8 @@ void drawBluetooth(int sentPerSec, uint32_t failed) {
   } else {
     BleBridge::PeerInfo pi[3];
     int n = BleBridge::peers(pi, 3);
-    snprintf(line, sizeof(line), "%d link%s  -  %s", n, n == 1 ? "" : "s",
-             BleBridge::advertising() ? "advertising" : "not advertising");
+    snprintf(line, sizeof(line), "%d link%s - %d paired - %s", n, n == 1 ? "" : "s", BleBridge::pairedCount(),
+             BleBridge::advertising() ? "adv." : "not adv.");
     text(x, y, line, C_TEXT, u8g2_font_helvB14_tr);
     y += 28;
     if (!n) {

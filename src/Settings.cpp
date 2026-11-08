@@ -42,6 +42,7 @@ void load() {
   vals.panelOpacity = prefs.getUChar("panel_opac", 75);
   vals.panelOutline = prefs.getBool("panel_outl", false);
   vals.panelPad = prefs.getUChar("panel_pad", 6);
+  vals.multiHost = prefs.getBool("multi_host", false);
   prefs.end();
 }
 
@@ -66,6 +67,7 @@ void save() {
   prefs.putUChar("panel_opac", vals.panelOpacity);
   prefs.putBool("panel_outl", vals.panelOutline);
   prefs.putUChar("panel_pad", vals.panelPad);
+  prefs.putBool("multi_host", vals.multiHost);
   prefs.end();
   dirty = false;
   mirrorToPartition();
@@ -91,6 +93,7 @@ void printSettings() {
   Serial.printf("panel_opacity=%u\n", vals.panelOpacity);
   Serial.printf("panel_style=%s\n", vals.panelOutline ? "outline" : "panels");
   Serial.printf("panel_pad=%u\n", vals.panelPad);
+  Serial.printf("hosts=%s\n", vals.multiHost ? "many" : "one");
   Serial.printf("unsaved=%d\n", dirty);
   Serial.println("--- end ---");
 }
@@ -118,6 +121,7 @@ void help() {
       "  set panel_opacity 0-100 screen boards: how dark the boxes behind text are\n"
       "  set panel_style panels|outline  screen boards: big boxes, or a thin edge round each item\n"
       "  set panel_pad 4-8       screen boards: outline style, px out from each item\n"
+      "  set hosts one|many      one: a second paired device is turned away while one is connected\n"
       "  save                    store settings and restart\n"
       "  forget                  erase Wi-Fi network and restart\n"
       "  unpair                  forget all Bluetooth pairings and restart\n"
@@ -177,6 +181,10 @@ bool setKey(const String &key, const String &value, bool quiet = false) {
     if (value == "panels") vals.panelOutline = false;
     else if (value == "outline") vals.panelOutline = true;
     else ok = false;
+  } else if (key == "hosts") {
+    if (value == "one") vals.multiHost = false;
+    else if (value == "many") vals.multiHost = true;
+    else ok = false;
   } else if (key == "panel_pad") {
     long v = value.toInt();
     ok = v >= 4 && v <= 8;
@@ -224,6 +232,7 @@ String settingsLines() {
   s += "panel_opacity=" + String(vals.panelOpacity) + "\n";
   s += String("panel_style=") + (vals.panelOutline ? "outline" : "panels") + "\n";
   s += "panel_pad=" + String(vals.panelPad) + "\n";
+  s += String("hosts=") + (vals.multiHost ? "many" : "one") + "\n";
   s += "fw=" DIVA_BRIDGE_VERSION "\n";  // read-only: lets the flasher show the board's version
   return s;
 }

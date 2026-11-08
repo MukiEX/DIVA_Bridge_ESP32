@@ -66,6 +66,13 @@ uint16_t dropConn[MAX_SUBS];
 uint32_t dropAt[MAX_SUBS];
 int dropCount = 0;
 
+// One device at a time: the paired (encrypted) host currently connected.
+uint16_t hostConn = BLE_HS_CONN_HANDLE_NONE;
+char hostId[18] = "";
+// Paired devices turned away (disconnected from housekeeping, not the callback).
+uint16_t kickConn[MAX_SUBS];
+int kickCount = 0;
+
 bool hasHid(uint16_t h) {
   for (int i = 0; i < hidSubCount; i++)
     if (hidSubs[i] == h) return true;
@@ -394,6 +401,15 @@ void housekeeping() {
     if (alive) dropIfGameOnly(stale[i]);   // went quiet: its link is a leftover
   }
 
+  // Turn away second paired devices (one device at a time).
+  portENTER_CRITICAL(&nmux);
+  uint16_t kicks[MAX_SUBS];
+  int nk = kickCount;
+  memcpy(kicks, kickConn, sizeof(uint16_t) * nk);
+  kickCount = 0;
+  portEXIT_CRITICAL(&nmux);
+  for (int i = 0; i < nk; i++) srv->disconnect(kicks[i]);
+
   // Drop leftover game-only links (after a goodbye / a quiet game).
   for (int i = 0; i < dropCount;) {
     if ((int32_t)(now - dropAt[i]) < 0) {
@@ -408,6 +424,9 @@ void housekeeping() {
     portEXIT_CRITICAL(&nmux);
     bool alive = false;
     for (uint16_t p : peers) alive |= p == h;
+    // A paired (encrypted) link is the host's own gamepad link even when its HID
+    // subscription was restored from the bond without an event: keep it.
+    if (alive && srv->getPeerInfoByHandle(h).isEncrypted()) keep = true;
     if (alive && !keep) {
       event("closed the game's old link");
       srv->disconnect(h);
@@ -448,7 +467,6 @@ void housekeeping() {
       i++;
       continue;
     }
-    event("disconnected: %s", knownAddr[i]);
     portENTER_CRITICAL(&nmux);
     for (int k = 0; k < inputSubCount; k++)
       if (inputSubs[k] == known[i]) inputSubs[k--] = inputSubs[--inputSubCount];
@@ -648,6 +666,8 @@ int peers(PeerInfo *out, int max) {
   return n;
 }
 
+int pairedCount() { return NimBLEDevice::getNumBonds(); }
+
 bool advertising() {
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   return adv && adv->isAdvertising();
@@ -679,4 +699,53 @@ void divaHidSubscribed(uint16_t connHandle, uint16_t subValue) {
   if (subValue && at < 0 && hidSubCount < MAX_SUBS) hidSubs[hidSubCount++] = connHandle;
   if (!subValue && at >= 0) hidSubs[at] = hidSubs[--hidSubCount];
   portEXIT_CRITICAL(&nmux);
+}
+
+// A paired device finished encrypting (new pairing, or a known one coming back).
+void divaAuthComplete(NimBLEConnInfo &info) {
+  using namespace BleBridge;
+  if (!info.isEncrypted()) return;
+  uint16_t h = info.getConnHandle();
+  String id = info.getIdAddress().toString().c_str();
+  String shortId = id.length() > 6 ? id.substring(id.length() - 5) : id;
+  bool kick = false;
+  portENTER_CRITICAL(&nmux);
+  if (hostConn == BLE_HS_CONN_HANDLE_NONE || Settings::get().multiHost || id == hostId) {
+    hostConn = h;
+    snprintf(hostId, sizeof(hostId), "%s", id.c_str());
+  } else if (kickCount < MAX_SUBS) {
+    kickConn[kickCount++] = h;
+    kick = true;
+  }
+  portEXIT_CRITICAL(&nmux);
+  if (kick) {
+    static uint32_t lastNote = 0;   // a turned-away device retries: note it now and then
+    if (millis() - lastNote > 30000) {
+      lastNote = millis();
+      event("turned away %s (one device at a time)", shortId.c_str());
+      Serial.printf("[BLE] %s turned away: %s is connected (set hosts many to allow both)\n", id.c_str(), hostId);
+    }
+  } else {
+    event("paired device: %s", shortId.c_str());
+  }
+}
+
+void divaDisconnected(NimBLEConnInfo &info, int reason) {
+  using namespace BleBridge;
+  uint16_t h = info.getConnHandle();
+  bool wasHost = false;
+  portENTER_CRITICAL(&nmux);
+  if (h == hostConn) {
+    hostConn = BLE_HS_CONN_HANDLE_NONE;
+    hostId[0] = 0;
+    wasHost = true;
+  }
+  portEXIT_CRITICAL(&nmux);
+  int code = reason & 0xFF;   // NimBLE: 0x200 + HCI reason
+  const char *why = code == 0x13 ? "closed by it" : code == 0x16 ? "closed by us" : code == 0x08 ? "timed out"
+                  : code == 0x3E ? "failed to connect" : code == 0x22 || code == 0x28 ? "link error" : "";
+  String a = info.getAddress().toString().c_str();
+  String sa = a.length() > 6 ? a.substring(a.length() - 5) : a;
+  if (*why) event("disconnected: %s, %s%s", sa.c_str(), why, wasHost ? " (host)" : "");
+  else event("disconnected: %s, 0x%02X%s", sa.c_str(), code, wasHost ? " (host)" : "");
 }

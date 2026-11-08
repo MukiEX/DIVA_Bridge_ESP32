@@ -68,6 +68,8 @@ struct PeerInfo {
 /** Connected centrals, up to max. */
 int peers(PeerInfo *out, int max);
 bool advertising();
+/** Devices paired (bonded) with the board. */
+int pairedCount();
 
 struct Event {
   uint32_t ms;        // millis() when it happened

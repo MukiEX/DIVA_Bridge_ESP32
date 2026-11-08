@@ -137,6 +137,11 @@
           <option value="ble">Bluetooth only</option>
         </select>
         <label for="name">Bluetooth name</label><input id="name" maxlength="28" value="DIVA Bridge">
+        <label for="hosts">Bluetooth devices</label>
+        <select id="hosts">
+          <option value="one">One at a time, like a controller (recommended)</option>
+          <option value="many">Several at once</option>
+        </select>
         <label for="xbox">Pad profile</label>
         <select id="xbox"><option value="seriesx">Xbox Series X</option><option value="ones">Xbox One S</option></select>
         <label for="slider">Slider on the pad</label>
@@ -284,7 +289,7 @@ const BOARD_INFO = {
 };
 
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["ssid", "pass", "port", "radio", "name", "xbox", "slider", "otg_power", "brightness", "screen_timeout", "rotation", "panel_style", "panel_opacity", "panel_pad"];
+const FIELDS = ["ssid", "pass", "port", "radio", "name", "hosts", "xbox", "slider", "otg_power", "brightness", "screen_timeout", "rotation", "panel_style", "panel_opacity", "panel_pad"];
 const FLAGS = ["slider_reverse", "led_reverse", "leds"];
 let board = null, port = null, mode = null;      // mode: null | "flash" | "console"
 let transport = null, loader = null;             // flash mode

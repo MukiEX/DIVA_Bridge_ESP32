@@ -170,6 +170,9 @@ Restarting the game, or the bridge, needs no replug:
 - While the bridge is connected, the board sends it something at least once a second, even with the controller idle. If 3 s pass with nothing, the bridge does the handshake again. If that doesn't help, it drops the Bluetooth link and reconnects.
 - On the board, a repeated handshake from the same connection restarts that connection's stream. The old session's taps are dropped, and the status and current input are sent at once.
 - The bridge says `BYE` when it stops normally, and the Xbox pad comes back right away. A force-killed bridge can't say goodbye. Windows also keeps the Bluetooth link up for the gamepad driver. The next bridge's handshake takes over cleanly anyway.
+- **One device at a time** (default, `hosts=one`): like a controller, the board serves one paired device at a time. While one is connected, another paired device that connects is turned away. Links that aren't paired, such as the Quest game's own link next to its gamepad link, are still allowed. `hosts=many` allows several.
+- When a game leaves (says `BYE` or stops checking in), the board closes that game's own link, unless it's the device's paired gamepad link. Android keeps such a link up after the app is gone, and a relaunch that reuses it can stall.
+- The watch's Bluetooth page (tap the screen) shows each link, how many devices are paired, handshake and check-in state, and recent events, including disconnect reasons.
 - Every 2 s the bridge (and the Quest recomp) sends `HI`. A client that stops doing that for 6 s is dropped, because it's a game that was killed while the system kept the Bluetooth link up. The Xbox pad comes back and the screen shows *Games: none* again. Only clients that handshake with protocol 3 or later are held to this.
 
 ## Latency notes

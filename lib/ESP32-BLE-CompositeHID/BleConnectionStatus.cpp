@@ -27,8 +27,13 @@ void BleConnectionStatus::onConnect(NimBLEServer *pServer, NimBLEConnInfo& connI
     pServer->updateConnParams(connInfo.getConnHandle(), minInterval, maxInterval, latency, timeout);
 }
 
+// DIVA Bridge patch: let the app see pairing completions and disconnect reasons.
+extern void divaAuthComplete(NimBLEConnInfo& connInfo) __attribute__((weak));
+extern void divaDisconnected(NimBLEConnInfo& connInfo, int reason) __attribute__((weak));
+
 void BleConnectionStatus::onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason)
 {
+    if (divaDisconnected) divaDisconnected(connInfo, reason);
     // DIVA Bridge ESP32 patch: with several centrals connected, one leaving
     // must not mute reports to the others (NimBLE has already removed the
     // leaving peer from the count here).
@@ -42,4 +47,5 @@ bool BleConnectionStatus::isConnected(){
 void BleConnectionStatus::onAuthenticationComplete(NimBLEConnInfo& connInfo)
 {
     this->connected = true;
+    if (divaAuthComplete) divaAuthComplete(connInfo);
 }

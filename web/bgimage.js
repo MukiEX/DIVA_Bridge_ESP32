@@ -109,7 +109,7 @@ function bgPreview(canvas) {
   row("Battery", "87% charging", GREEN);
 
   panel(0, H - L.footH, W, L.footH);
-  text(W / 2, H - 8, "v0.5.8  -  hold BOOT while plugging in to flash", DIM, "R10", -1);
+  text(W / 2, H - 8, "v0.5.9  -  hold BOOT while plugging in to flash", DIM, "R10", -1);
 }
 
 /** The partition blob for the current picture, at the current orientation. */

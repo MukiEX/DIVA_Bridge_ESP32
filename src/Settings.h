@@ -38,6 +38,7 @@ struct Values {
   uint8_t panelOpacity = 75;      // screen boards: % black behind the text (0-100)
   bool panelOutline = false;      // screen boards: shade just around each item, not panels
   uint8_t panelPad = 6;           // screen boards: outline style, px out from each item (4-8)
+  bool multiHost = false;         // false: one paired device connected at a time (like a pad)
 };
 
 /** Load from NVS (defaults where nothing is stored). */
