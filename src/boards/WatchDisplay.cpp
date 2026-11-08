@@ -477,11 +477,86 @@ void draw(const Snapshot &s) {
   gfx->flush();
 }
 
+// ------------------------------------------------------------- Bluetooth page
+// Tap the screen to switch to it (and back): links, whether each did the DIVA
+// handshake and is still checking in, the input stream, and recent events.
+int page = 0;   // 0 = controller, 1 = Bluetooth
+
+const char *ago(uint32_t ms, char *buf, size_t n) {
+  if (ms < 10000) snprintf(buf, n, "%u.%us", (unsigned)(ms / 1000), (unsigned)(ms % 1000 / 100));
+  else if (ms < 600000) snprintf(buf, n, "%us", (unsigned)(ms / 1000));
+  else snprintf(buf, n, "%um", (unsigned)(ms / 60000));
+  return buf;
+}
+
+void drawBluetooth(int sentPerSec, uint32_t failed) {
+  memcpy(gfx->getFramebuffer(), background, WIDTH * HEIGHT * 2);
+  const Layout &L = layout();
+  auto &cfg = Settings::get();
+  char line[80], t[16];
+  panelBox(0, 0, lw, L.titleH);
+  text(lw / 2, L.titleBase, "BLUETOOTH", C_TEXT, u8g2_font_helvB24_tr, -1);
+  panelBox(14, L.titleH + 8, lw - 28, lh - L.titleH - 8 - L.footH - 8);
+  int y = L.titleH + 34, x = 28;
+  if (cfg.radio == Settings::Radio::WifiOnly) {
+    text(x, y, "Bluetooth is off (radio = Wi-Fi only)", C_AMBER, u8g2_font_helvB14_tr);
+  } else {
+    BleBridge::PeerInfo pi[3];
+    int n = BleBridge::peers(pi, 3);
+    snprintf(line, sizeof(line), "%d link%s  -  %s", n, n == 1 ? "" : "s",
+             BleBridge::advertising() ? "advertising" : "not advertising");
+    text(x, y, line, C_TEXT, u8g2_font_helvB14_tr);
+    y += 28;
+    if (!n) {
+      text(x, y, "Nothing connected. A game connects when it starts.", C_DIM, u8g2_font_helvR10_tr);
+      y += 22;
+    }
+    for (int i = 0; i < n; i++) {
+      text(x, y, pi[i].addr, C_TEXT, u8g2_font_helvB10_tr);
+      y += 20;
+      if (pi[i].native) {
+        if (pi[i].proto >= 3)
+          snprintf(line, sizeof(line), "Handshake ACTIVE (v%u), checked in %s ago", pi[i].proto,
+                   ago(pi[i].quietMs, t, sizeof(t)));
+        else
+          snprintf(line, sizeof(line), "Handshake ACTIVE (v%u, no check-ins)", pi[i].proto);
+        text(x + 12, y, line, C_GREEN, u8g2_font_helvB10_tr);
+      } else {
+        text(x + 12, y, "No handshake (Xbox pad only)", C_AMBER, u8g2_font_helvB10_tr);
+      }
+      y += 18;
+      snprintf(line, sizeof(line), "Input %s  -  %.2f ms  -  MTU %u",
+               pi[i].inputSub ? "subscribed" : "NOT subscribed", pi[i].intervalMs, pi[i].mtu);
+      text(x + 12, y, line, pi[i].inputSub ? C_DIM : C_AMBER, u8g2_font_helvR10_tr);
+      y += 24;
+    }
+    snprintf(line, sizeof(line), "Stream: %d updates/s, %u failed", sentPerSec, (unsigned)failed);
+    text(x, y, line, C_DIM, u8g2_font_helvR10_tr);
+    y += 28;
+    text(x, y, "Recent", C_TEXT, u8g2_font_helvB10_tr);
+    y += 20;
+    BleBridge::Event ev[12];
+    int ne = BleBridge::events(ev, 12);
+    uint32_t now = millis();
+    for (int i = 0; i < ne && y < lh - L.footH - 14; i++) {
+      text(x, y, ago(now - ev[i].ms, t, sizeof(t)), C_DIM, u8g2_font_helvR10_tr);
+      text(x + 52, y, ev[i].text, C_TEXT, u8g2_font_helvR10_tr);
+      y += 17;
+    }
+    if (!ne) text(x, y, "(nothing yet)", C_DIM, u8g2_font_helvR10_tr);
+  }
+  panelBox(0, lh - L.footH, lw, L.footH);
+  text(lw / 2, lh - 8, "tap the screen to go back", C_DIM, u8g2_font_helvR10_tr, -1);
+  gfx->flush();
+}
+
 void uiTask(void *) {
   Snapshot cur = {}, last = {};
   uint32_t lastDraw = 0, lastPartial = 0, lastRateShown = 0, lastActivity = millis(), lastBattery = 0, lastRate = 0, lastReports = 0;
   int rate = 0;
-  bool dimmed = false, firstDraw = true;
+  bool dimmed = false, firstDraw = true, wasTouched = false;
+  uint32_t lastBtDraw = 0, lastSent = 0, lastSentAt = 0;
+  int sentRate = 0;
   auto &cfg = Settings::get();
   while (true) {
     uint32_t now = millis();
@@ -517,6 +592,12 @@ void uiTask(void *) {
 
     bool inputChanged = memcmp(cur.pkt, last.pkt, sizeof(cur.pkt)) != 0 || cur.present != last.present;
     bool touch = touched();
+    bool tap = touch && !wasTouched;
+    wasTouched = touch;
+    if (tap && !dimmed) {   // a tap that wakes the screen doesn't also flip the page
+      page ^= 1;
+      redrawAll = true;
+    }
     if (inputChanged || touch) lastActivity = now;
     uint32_t timeout = cfg.screenTimeout * 1000u;
     if (dimmed && now - lastActivity < 200) {
@@ -525,6 +606,23 @@ void uiTask(void *) {
     } else if (!dimmed && timeout && now - lastActivity > timeout) {
       panel->setBrightness(max(4, cfg.brightness / 16));  // dim, not off: AMOLED, keep it gentle
       dimmed = true;
+    }
+    if (page == 1) {   // Bluetooth page: redraw a few times a second
+      if (now - lastSentAt >= 1000) {
+        uint32_t sNow = BleBridge::notifySent();
+        sentRate = (sNow - lastSent) * 1000 / max<uint32_t>(1, now - lastSentAt);
+        lastSent = sNow;
+        lastSentAt = now;
+      }
+      if (redrawAll || now - lastBtDraw >= 250) {
+        redrawAll = false;
+        drawBluetooth(sentRate, BleBridge::notifyFailed());
+        lastBtDraw = now;
+        firstDraw = true;   // back on page 0: start with a full frame
+      }
+      last = cur;
+      vTaskDelay(pdMS_TO_TICKS(8));
+      continue;
     }
     // Only the controller's buttons/slider moved: partial update, as often as every 8 ms.
     Snapshot same = cur;

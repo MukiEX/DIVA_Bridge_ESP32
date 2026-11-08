@@ -54,4 +54,25 @@ int connections();
 /** Bluetooth clients currently in native mode (games / the PC bridge). */
 int nativeBleClients();
 
+// ---- diagnostics (the watch's Bluetooth page) ----
+struct PeerInfo {
+  char addr[18];
+  bool native;        // did the DIVA handshake
+  bool inputSub;      // subscribed to INPUT notifications
+  uint8_t proto;      // protocol it handshook with
+  uint32_t quietMs;   // since its last CONTROL write (handshake / HI)
+  float intervalMs;
+  uint16_t mtu;
+};
+/** Connected centrals, up to max. */
+int peers(PeerInfo *out, int max);
+bool advertising();
+
+struct Event {
+  uint32_t ms;        // millis() when it happened
+  char text[44];
+};
+/** Recent Bluetooth events, newest first, up to max. */
+int events(Event *out, int max);
+
 }  // namespace BleBridge

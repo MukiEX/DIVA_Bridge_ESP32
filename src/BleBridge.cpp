@@ -3,6 +3,7 @@
 #include <BleCompositeHID.h>
 #include <NimBLEDevice.h>
 #include <XboxGamepadDevice.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include <atomic>
@@ -47,7 +48,39 @@ portMUX_TYPE nmux = portMUX_INITIALIZER_UNLOCKED;
 uint16_t nativeConns[MAX_NATIVE];
 uint32_t nativeSeen[MAX_NATIVE];   // millis() of the client's last CONTROL write
 bool nativeLeased[MAX_NATIVE];     // handshook with protocol >= 3: must keep writing
+uint8_t nativeProto[MAX_NATIVE];
 int nativeCount = 0;
+
+// INPUT subscriptions by connection (for the diagnostics page).
+constexpr int MAX_SUBS = 8;
+uint16_t inputSubs[MAX_SUBS];
+int inputSubCount = 0;
+
+// Recent events, for the screen (and the serial log).
+constexpr int MAX_EVENTS = 12;
+Event eventRing[MAX_EVENTS];
+int eventHead = 0, eventTotal = 0;
+portMUX_TYPE emux = portMUX_INITIALIZER_UNLOCKED;
+
+void event(const char *fmt, ...) {
+  Event e;
+  e.ms = millis();
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(e.text, sizeof(e.text), fmt, ap);
+  va_end(ap);
+  portENTER_CRITICAL(&emux);
+  eventRing[eventHead] = e;
+  eventHead = (eventHead + 1) % MAX_EVENTS;
+  eventTotal++;
+  portEXIT_CRITICAL(&emux);
+}
+
+/** "B8:1F:3F:D8:27:31" -> "..27:31" style short name for event lines. */
+String shortAddr(const NimBLEAddress &a) {
+  String s = a.toString().c_str();
+  return s.length() > 6 ? s.substring(s.length() - 5) : s;
+}
 
 inline NimBLEServer *s_server() { return server.load(std::memory_order_acquire); }
 
@@ -89,6 +122,7 @@ void removeNative(uint16_t h) {
       nativeConns[i] = nativeConns[nativeCount];
       nativeSeen[i] = nativeSeen[nativeCount];
       nativeLeased[i] = nativeLeased[nativeCount];
+      nativeProto[i] = nativeProto[nativeCount];
       removed = true;
       break;
     }
@@ -129,12 +163,18 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
                     info.getAddress().toString().c_str(), ver, info.getMTU(),
                     again ? " - again: restarting its stream" : "");
       addNative(h, ver >= 3);
+      portENTER_CRITICAL(&nmux);
+      int ni = nativeIndex(h);
+      if (ni >= 0) nativeProto[ni] = ver;
+      portEXIT_CRITICAL(&nmux);
+      event("%s v%d from %s", again ? "handshake again" : "handshake", ver, shortAddr(info.getAddress()).c_str());
       restartStream = true;
       if (outTask) xTaskNotifyGive(outTask);
       // 7.5 ms connection interval for the lowest latency.
       s_server()->updateConnParams(h, 6, 6, 0, 200);
     } else if (v.size() >= 3 && memcmp(v.data(), "BYE", 3) == 0) {
       Serial.printf("[BLE] %s said goodbye\n", info.getAddress().toString().c_str());
+      event("goodbye from %s", shortAddr(info.getAddress()).c_str());
       removeNative(h);
     } else {
       touchNative(h);   // "HI" (or anything else): still here
@@ -161,7 +201,16 @@ class InputCallbacks : public NimBLECharacteristicCallbacks {
   // A relay that crashes without "BYE" while the PC keeps the link up for its
   // gamepad driver: NimBLE reports the unsubscribe (also on disconnect).
   void onSubscribe(NimBLECharacteristic *, NimBLEConnInfo &info, uint16_t sub) override {
-    if (sub == 0) removeNative(info.getConnHandle());
+    uint16_t h = info.getConnHandle();
+    portENTER_CRITICAL(&nmux);
+    int at = -1;
+    for (int i = 0; i < inputSubCount; i++)
+      if (inputSubs[i] == h) at = i;
+    if (sub && at < 0 && inputSubCount < MAX_SUBS) inputSubs[inputSubCount++] = h;
+    if (!sub && at >= 0) inputSubs[at] = inputSubs[--inputSubCount];
+    portEXIT_CRITICAL(&nmux);
+    event("input %s by %s", sub ? "subscribed" : "unsubscribed", shortAddr(info.getAddress()).c_str());
+    if (sub == 0) removeNative(h);
   }
   void onRead(NimBLECharacteristic *c, NimBLEConnInfo &) override {
     uint8_t buf[INPUT_LEN] = {};
@@ -305,6 +354,7 @@ void housekeeping() {
       alive = false;
       Serial.printf("[BLE] native client (connection %u) went quiet for %u s - releasing it\n",
                     nativeConns[i], (unsigned)(LEASE_MS / 1000));
+      event("game went quiet %us: released", (unsigned)(LEASE_MS / 1000));
     }
     if (!alive) stale[n++] = nativeConns[i];
   }
@@ -321,6 +371,38 @@ void housekeeping() {
   if (units != stats.intervalUnits) {
     stats.intervalUnits = units;
     if (units) Serial.printf("[BLE] bridge connection interval: %.2f ms\n", units * 1.25f);
+  }
+
+  // Connect / disconnect events (remember addresses: gone peers have none)
+  static uint16_t known[8];
+  static char knownAddr[8][8];
+  static int knownCount = 0;
+  for (uint16_t p : peers) {
+    bool seen = false;
+    for (int i = 0; i < knownCount; i++) seen |= known[i] == p;
+    if (!seen && knownCount < 8) {
+      known[knownCount] = p;
+      snprintf(knownAddr[knownCount], sizeof(knownAddr[0]), "%s",
+               shortAddr(srv->getPeerInfoByHandle(p).getAddress()).c_str());
+      event("connected: %s", knownAddr[knownCount]);
+      knownCount++;
+    }
+  }
+  for (int i = 0; i < knownCount;) {
+    bool alive = false;
+    for (uint16_t p : peers) alive |= known[i] == p;
+    if (alive) {
+      i++;
+      continue;
+    }
+    event("disconnected: %s", knownAddr[i]);
+    portENTER_CRITICAL(&nmux);
+    for (int k = 0; k < inputSubCount; k++)
+      if (inputSubs[k] == known[i]) inputSubs[k--] = inputSubs[--inputSubCount];
+    portEXIT_CRITICAL(&nmux);
+    known[i] = known[knownCount - 1];
+    memcpy(knownAddr[i], knownAddr[knownCount - 1], sizeof(knownAddr[0]));
+    knownCount--;
   }
 
   static size_t lastPeers = 0;
@@ -458,6 +540,43 @@ uint32_t notifySent() { return stats.sent; }
 uint32_t notifyFailed() { return stats.failed; }
 
 int nativeBleClients() { return nativeCount; }
+
+int peers(PeerInfo *out, int max) {
+  NimBLEServer *srv = s_server();
+  if (!srv) return 0;
+  int n = 0;
+  uint32_t now = millis();
+  for (uint16_t h : srv->getPeerDevices()) {
+    if (n >= max) break;
+    NimBLEConnInfo ci = srv->getPeerInfoByHandle(h);
+    PeerInfo &p = out[n++];
+    snprintf(p.addr, sizeof(p.addr), "%s", ci.getAddress().toString().c_str());
+    p.intervalMs = ci.getConnInterval() * 1.25f;
+    p.mtu = ci.getMTU();
+    portENTER_CRITICAL(&nmux);
+    int i = nativeIndex(h);
+    p.native = i >= 0;
+    p.proto = i >= 0 ? nativeProto[i] : 0;
+    p.quietMs = i >= 0 ? now - nativeSeen[i] : 0;
+    p.inputSub = false;
+    for (int k = 0; k < inputSubCount; k++) p.inputSub |= inputSubs[k] == h;
+    portEXIT_CRITICAL(&nmux);
+  }
+  return n;
+}
+
+bool advertising() {
+  NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+  return adv && adv->isAdvertising();
+}
+
+int events(Event *out, int max) {
+  portENTER_CRITICAL(&emux);
+  int n = min(max, min(eventTotal, MAX_EVENTS));
+  for (int i = 0; i < n; i++) out[i] = eventRing[(eventHead - 1 - i + MAX_EVENTS) % MAX_EVENTS];
+  portEXIT_CRITICAL(&emux);
+  return n;
+}
 
 int connections() {
   NimBLEServer *srv = s_server();
