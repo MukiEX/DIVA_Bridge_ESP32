@@ -518,7 +518,7 @@ void pageDots() {
 // Buttons on the devices page (logical coordinates), for tap hit-testing.
 struct Btn {
   Rect r;
-  uint8_t action;   // 1 disconnect, 2 forget
+  uint8_t action;   // 1 disconnect, 2 forget, 3 pairing on/off
   char addr[18];
 };
 Btn btns[12];
@@ -551,7 +551,22 @@ void drawDevices() {
   BleBridge::BondInfo b[6];
   int n = BleBridge::bonded(b, 6);
   int rowH = 74, y0 = L.titleH + 10;
-  int maxRows = (lh - L.footH - 10 - y0) / (rowH + 6);
+  // Pairing mode strip at the bottom: "Pair new device" / countdown + Stop
+  const int pairH = 56, pairY = lh - L.footH - 8 - pairH;
+  int left = BleBridge::pairingLeft();
+  panelBox(14, pairY, lw - 28, pairH);
+  if (left == 0) {
+    text(28, pairY + 34, "Pairing is closed", C_DIM, u8g2_font_helvR10_tr);
+    button(lw - 28 - 170, pairY + 13, 170, 30, "Pair new device", C_CYAN, 3, "");
+  } else {
+    char msg[48];
+    if (left < 0) snprintf(msg, sizeof(msg), "Pairing open: first device");
+    else snprintf(msg, sizeof(msg), "Pairing open: %d s", left);
+    text(28, pairY + 26, msg, C_GREEN, u8g2_font_helvB10_tr);
+    text(28, pairY + 44, "Pair \"DIVA Bridge\" now", C_DIM, u8g2_font_helvR10_tr);
+    button(lw - 28 - 90, pairY + 13, 90, 30, "Stop", C_AMBER, 3, "");
+  }
+  int maxRows = (pairY - 6 - y0) / (rowH + 6);
   if (!n) {
     panelBox(14, y0, lw - 28, 90);
     text(28, y0 + 34, "No paired devices", C_TEXT, u8g2_font_helvB14_tr);
@@ -572,7 +587,7 @@ void drawDevices() {
   }
   if (n > maxRows) {
     snprintf(line_buf(), 40, "+%d more", n - maxRows);
-    text(lw / 2, lh - L.footH - 8, line_buf(), C_DIM, u8g2_font_helvR10_tr, -1);
+    text(lw - 28, pairY - 4, line_buf(), C_DIM, u8g2_font_helvR10_tr, 1);
   }
   panelBox(0, lh - L.footH, lw, L.footH);
   text(lw / 2, lh - 8, "swipe for more  -  Forget: tap twice", C_DIM, u8g2_font_helvR10_tr, -1);
@@ -584,7 +599,10 @@ bool devicesTap(int x, int y) {
   for (int i = 0; i < nbtn; i++) {
     const Rect &r = btns[i].r;
     if (x < r.x - 6 || x > r.x + r.w + 6 || y < r.y - 6 || y > r.y + r.h + 6) continue;
-    if (btns[i].action == 1) {
+    if (btns[i].action == 3) {
+      if (BleBridge::pairingLeft() != 0) BleBridge::closePairing();
+      else BleBridge::openPairing(60);
+    } else if (btns[i].action == 1) {
       BleBridge::disconnectDevice(btns[i].addr);
     } else if (confirmAddr[0] && millis() < confirmUntil && strcmp(confirmAddr, btns[i].addr) == 0) {
       BleBridge::forgetDevice(btns[i].addr);

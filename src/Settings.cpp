@@ -4,6 +4,7 @@
 #include <esp_partition.h>
 #include <esp_random.h>
 
+#include "BleBridge.h"
 #include "ConfigBlob.h"
 #include "Version.h"
 
@@ -124,6 +125,7 @@ void help() {
       "  set hosts one|many      one: a second paired device is turned away while one is connected\n"
       "  save                    store settings and restart\n"
       "  forget                  erase Wi-Fi network and restart\n"
+      "  pair                    open Bluetooth pairing mode for 60 s (new devices can pair)\n"
       "  unpair                  forget all Bluetooth pairings and restart\n"
       "  reboot");
 }
@@ -368,6 +370,9 @@ void handle(String cmd) {
     Serial.println("OK Wi-Fi forgotten - restarting");
     delay(200);
     ESP.restart();
+  } else if (verb == "pair") {
+    BleBridge::openPairing(60);
+    Serial.println("OK pairing open for 60 s - pair \"" + vals.name + "\" on the new device now");
   } else if (verb == "unpair") {
     prefs.begin("divabridge", false);
     prefs.putBool("unpair", true);  // done at the next boot, before BLE starts

@@ -83,6 +83,13 @@ void disconnectDevice(const char *addr);
 /** Disconnect and forget a paired device (it has to pair again). */
 void forgetDevice(const char *addr);
 
+/** Pairing mode: new devices may pair only while it's open (like a controller).
+ *  It's open while nothing is paired, and for `seconds` after openPairing(). */
+void openPairing(uint32_t seconds);
+void closePairing();
+/** Seconds of pairing mode left: 0 = closed, -1 = open until a device pairs. */
+int pairingLeft();
+
 struct Event {
   uint32_t ms;        // millis() when it happened
   char text[44];

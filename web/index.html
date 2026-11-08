@@ -168,6 +168,8 @@
           <div class="check"><input type="checkbox" id="led_reverse"><label for="led_reverse">Reverse slider LEDs (ZhouSensor)</label></div>
           <div class="check"><input type="checkbox" id="leds"><label for="leds">Send LEDs to the controller</label></div>
           <div class="check"><input type="checkbox" id="unpair"><label for="unpair">Forget Bluetooth pairings</label></div>
+          <div class="row" style="margin-top:8px"><button id="pairbtn" type="button">Pair a new Bluetooth device</button>
+            <span class="hint" id="pairinfo" style="margin:0">Like a controller, the board only takes new pairings for 60 s after this.</span></div>
         </div>
         <label for="otg_power" class="otgonly">Host port power</label>
         <select id="otg_power" class="otgonly"><option value="usb">From the USB_DEV plug</option><option value="battery">From the battery</option></select>
@@ -574,6 +576,13 @@ $("bgsave").onclick = async () => {
 $("bgclear").onclick = async () => {
   try { await fetch("/api/background", { method: "DELETE" }); $("bginfo").textContent = "Picture removed (back to the default)."; }
   catch (e) { $("bginfo").textContent = "Couldn't remove it: " + e.message; }
+};
+
+$("pairbtn").onclick = async () => {
+  try {
+    const j = await (await fetch("/api/pair", { method: "POST" })).json();
+    $("pairinfo").textContent = `Pairing open for ${j.seconds} s: pair "${$("name").value || "DIVA Bridge"}" on the new device now.`;
+  } catch (e) { $("pairinfo").textContent = "Couldn't open pairing: " + e.message; }
 };
 
 draw(null);

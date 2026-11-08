@@ -57,6 +57,8 @@ class H(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         if self.path == "/api/background":
             posts["bg"].append(raw); return self.send(200, '{"ok":true}')
+        if self.path == "/api/pair":
+            posts["pair"] = posts.get("pair", 0) + 1; return self.send(200, '{"ok":true,"seconds":60}')
         body = raw.decode()
         if self.path == "/api/leds":
             posts["leds"].append(body); return self.send(200, '{"ok":true}')
@@ -121,6 +123,8 @@ with sync_playwright() as p:
     body = posts["settings"][-1]
     assert "port=45711\n" in body and "slider=position\n" in body and "unpair=1\n" in body, body
     assert "pass=" not in body, "unchanged password must not be sent"
+    pg.click("#pairbtn"); pg.wait_for_function("document.getElementById('pairinfo').textContent.includes('Pairing open')")
+    assert posts.get("pair") == 1
     assert pg.is_hidden("#bgprev") and pg.is_hidden("#brightness")
     pg.screenshot(path=os.path.join(OUT, "settings.png"), full_page=True)
     # Watch board: screen settings, battery, background upload/remove

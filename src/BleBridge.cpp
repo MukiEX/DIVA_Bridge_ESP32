@@ -73,6 +73,42 @@ char hostId[18] = "";
 uint16_t kickConn[MAX_SUBS];
 int kickCount = 0;
 
+// Pairing mode. Devices allowed to be paired: the bonds that existed when the
+// board started, plus any paired while pairing mode was open. A device that
+// pairs at any other time (an old host re-pairing by itself after being
+// forgotten) is refused: its new bond is deleted and it's disconnected.
+constexpr int MAX_ALLOWED = 8;
+char allowed[MAX_ALLOWED][18];
+int allowedCount = 0;
+bool pairOpenUntilFirst = false;   // nothing paired: open until one device pairs
+uint32_t pairUntil = 0;            // openPairing(): open until this millis()
+char refuseAddr[MAX_SUBS][18];     // bonds to delete (from housekeeping)
+uint16_t refuseConn[MAX_SUBS];
+int refuseCount = 0;
+
+bool isAllowed(const char *id) {
+  for (int i = 0; i < allowedCount; i++)
+    if (strcmp(allowed[i], id) == 0) return true;
+  return false;
+}
+void allow(const char *id) {
+  if (!isAllowed(id) && allowedCount < MAX_ALLOWED) snprintf(allowed[allowedCount++], 18, "%s", id);
+}
+void disallow(const char *id) {
+  for (int i = 0; i < allowedCount; i++)
+    if (strcmp(allowed[i], id) == 0) {
+      memcpy(allowed[i], allowed[--allowedCount], 18);
+      return;
+    }
+}
+bool pairingOpen() { return pairOpenUntilFirst || (pairUntil && (int32_t)(pairUntil - millis()) > 0); }
+void snapshotBonds() {
+  allowedCount = 0;
+  for (int i = 0; i < NimBLEDevice::getNumBonds() && i < MAX_ALLOWED; i++)
+    allow(NimBLEDevice::getBondedAddress(i).toString().c_str());
+  pairOpenUntilFirst = allowedCount == 0;
+}
+
 bool hasHid(uint16_t h) {
   for (int i = 0; i < hidSubCount; i++)
     if (hidSubs[i] == h) return true;
@@ -268,6 +304,11 @@ class DivaHid : public BleCompositeHID {
       NimBLEDevice::deleteAllBonds();
       Serial.println("[BLE] all pairings forgotten");
     }
+    snapshotBonds();
+    if (pairOpenUntilFirst) {
+      Serial.println("[BLE] nothing paired yet: pairing open for the first device");
+      event("nothing paired: pairing open");
+    }
     NimBLEDevice::setMTU(247);
     NimBLEService *svc = s->createService(DIVA_BLE_SERVICE_UUID);
     chControl = svc->createCharacteristic(
@@ -399,6 +440,30 @@ void housekeeping() {
     bool alive = false;
     for (uint16_t p : peers) alive |= p == stale[i];
     if (alive) dropIfGameOnly(stale[i]);   // went quiet: its link is a leftover
+  }
+
+  // Refused pairings: drop the link and the bond it just made.
+  portENTER_CRITICAL(&nmux);
+  char rAddr[MAX_SUBS][18];
+  uint16_t rConn[MAX_SUBS];
+  int nr = refuseCount;
+  memcpy(rAddr, refuseAddr, sizeof(rAddr[0]) * nr);
+  memcpy(rConn, refuseConn, sizeof(uint16_t) * nr);
+  refuseCount = 0;
+  portEXIT_CRITICAL(&nmux);
+  for (int i = 0; i < nr; i++) {
+    srv->disconnect(rConn[i]);
+    for (int b = 0; b < NimBLEDevice::getNumBonds(); b++) {
+      NimBLEAddress a = NimBLEDevice::getBondedAddress(b);
+      if (strcmp(a.toString().c_str(), rAddr[i]) == 0) {
+        NimBLEDevice::deleteBond(a);
+        break;
+      }
+    }
+  }
+  if (pairUntil && (int32_t)(pairUntil - now) <= 0) {
+    pairUntil = 0;
+    event("pairing mode closed");
   }
 
   // Turn away second paired devices (one device at a time).
@@ -668,6 +733,26 @@ int peers(PeerInfo *out, int max) {
 
 int pairedCount() { return NimBLEDevice::getNumBonds(); }
 
+void openPairing(uint32_t seconds) {
+  pairUntil = millis() + seconds * 1000;
+  if (!pairUntil) pairUntil = 1;
+  event("pairing mode open (%us)", (unsigned)seconds);
+  Serial.printf("[BLE] pairing mode open for %u s\n", (unsigned)seconds);
+}
+
+void closePairing() {
+  pairUntil = 0;
+  pairOpenUntilFirst = false;
+  event("pairing mode closed");
+}
+
+int pairingLeft() {
+  if (pairOpenUntilFirst) return -1;
+  if (!pairUntil) return 0;
+  int32_t left = (int32_t)(pairUntil - millis());
+  return left > 0 ? (left + 999) / 1000 : 0;
+}
+
 int bonded(BondInfo *out, int max) {
   NimBLEServer *srv = s_server();
   int n = min(max, NimBLEDevice::getNumBonds());
@@ -704,6 +789,9 @@ void forgetDevice(const char *addr) {
       break;
     }
   }
+  portENTER_CRITICAL(&nmux);
+  disallow(addr);
+  portEXIT_CRITICAL(&nmux);
   event("forgot %s", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
   Serial.printf("[BLE] forgot paired device %s\n", addr);
 }
@@ -748,6 +836,35 @@ void divaAuthComplete(NimBLEConnInfo &info) {
   uint16_t h = info.getConnHandle();
   String id = info.getIdAddress().toString().c_str();
   String shortId = id.length() > 6 ? id.substring(id.length() - 5) : id;
+  // Pairing mode: is this device allowed to be paired?
+  bool refused = false, newlyPaired = false;
+  portENTER_CRITICAL(&nmux);
+  if (!isAllowed(id.c_str())) {
+    if (pairingOpen()) {
+      allow(id.c_str());
+      pairOpenUntilFirst = false;
+      pairUntil = 0;   // one device per pairing window
+      newlyPaired = true;
+    } else if (refuseCount < MAX_SUBS) {
+      snprintf(refuseAddr[refuseCount], 18, "%s", id.c_str());
+      refuseConn[refuseCount++] = h;
+      refused = true;
+    }
+  }
+  portEXIT_CRITICAL(&nmux);
+  if (refused) {
+    static uint32_t lastRefuse = 0;
+    if (millis() - lastRefuse > 30000) {
+      lastRefuse = millis();
+      event("refused %s: not in pairing mode", shortId.c_str());
+      Serial.printf("[BLE] %s tried to pair outside pairing mode: refused\n", id.c_str());
+    }
+    return;
+  }
+  if (newlyPaired) {
+    event("new device paired: %s", shortId.c_str());
+    Serial.printf("[BLE] paired %s (pairing mode closed)\n", id.c_str());
+  }
   bool kick = false;
   portENTER_CRITICAL(&nmux);
   if (hostConn == BLE_HS_CONN_HANDLE_NONE || Settings::get().multiHost || id == hostId) {

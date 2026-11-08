@@ -242,6 +242,10 @@ void begin() {
   server->on("/api/settings", HTTP_GET, handleGetSettings);
   server->on("/api/settings", HTTP_POST, handlePostSettings);
   server->on("/api/leds", HTTP_POST, handleLeds);
+  server->on("/api/pair", HTTP_POST, [] {
+    BleBridge::openPairing(60);
+    server->send(200, "application/json", "{\"ok\":true,\"seconds\":60}");
+  });
   server->on("/api/background", HTTP_POST, handleBgDone, handleBgUpload);
   server->on("/api/background", HTTP_DELETE, handleBgClear);
   server->onNotFound([] { server->send(404, "text/plain", "not found"); });

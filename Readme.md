@@ -40,7 +40,7 @@ One controller at a time. The serial log says so if a ZhouSensor is in the wrong
   - The live controller view updates up to ~120 times a second. Only the parts that changed (slider, face buttons, L/R/FN, extra buttons) are redrawn and sent to the panel, at low priority, so the controller and Bluetooth always come first.
   - **Swipe left or right** to move between three pages. They loop, and dots under the title show which page you're on. A touch that wakes a dimmed screen does nothing else.
     1. **Controller:** the live tester and status.
-    2. **Devices:** every paired device, shown as connected, connected and in use, or not connected. Each has **Disconnect** and **Forget** buttons; Forget needs a second tap within 3 s.
+    2. **Devices:** every paired device, shown as connected, connected and in use, or not connected. Each has **Disconnect** and **Forget** buttons; Forget needs a second tap within 3 s. **Pair new device** opens pairing mode for 60 s.
     3. **Bluetooth:** each link, the handshake and check-in state, input subscription, interval and MTU, the stream rate, and recent events with disconnect reasons.
   - The screen dims after a set idle time (*Dim screen after*, default 1 min). Touching it, or any controller input, wakes it.
   - *Screen rotation* turns the layout 0/90/180/270°. At 90° and 270° it switches to a landscape layout with the status in two columns.
@@ -166,6 +166,11 @@ Restarting the game, or the bridge, needs no replug:
 - While the bridge is connected, the board sends it something at least once a second, even with the controller idle. If 3 s pass with nothing, the bridge does the handshake again. If that doesn't help, it drops the Bluetooth link and reconnects.
 - On the board, a repeated handshake from the same connection restarts that connection's stream. The old session's taps are dropped, and the status and current input are sent at once.
 - The bridge says `BYE` when it stops normally, and the Xbox pad comes back right away. A force-killed bridge can't say goodbye. Windows also keeps the Bluetooth link up for the gamepad driver. The next bridge's handshake takes over cleanly anyway.
+- **Pairing mode.** As with a controller, new devices can only pair while pairing is open:
+  - while nothing is paired (fresh install, an erase or *forget all*), until the first device pairs;
+  - for 60 s after **Pair new device** on the watch's Devices page, for one device.
+
+  At any other time, a device that tries to pair is refused, its new pairing is deleted and it's disconnected. Without this, hosts that still remember the board (a Quest, a phone, a PC) re-paired by themselves straight after being forgotten.
 - **One device at a time** (default, `hosts=one`): like a controller, the board serves one paired device at a time. While one is connected, another paired device that connects is turned away. Links that aren't paired, such as the Quest game's own link next to its gamepad link, are still allowed. `hosts=many` allows several.
 - When a game leaves (says `BYE` or stops checking in), the board closes that game's own link, unless it's the device's paired gamepad link. Android keeps such a link up after the app is gone, and a relaunch that reuses it can stall.
 - The watch's Bluetooth page (swipe to the third page) shows each link, how many devices are paired, handshake and check-in state, and recent events, including disconnect reasons.
