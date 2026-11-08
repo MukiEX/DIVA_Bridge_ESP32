@@ -405,6 +405,33 @@ void housekeeping() {
     knownCount--;
   }
 
+  // A game link left at Android's "balanced" 30-50 ms interval adds that much
+  // lag: ask for 7.5-15 ms again, a few times, a few seconds apart.
+  static uint16_t slowConn = BLE_HS_CONN_HANDLE_NONE;
+  static uint8_t slowTries = 0;
+  static uint32_t slowAsked = 0;
+  uint16_t nat[MAX_NATIVE];
+  int nn = 0;
+  portENTER_CRITICAL(&nmux);
+  for (int i = 0; i < nativeCount; i++) nat[nn++] = nativeConns[i];
+  portEXIT_CRITICAL(&nmux);
+  for (int i = 0; i < nn; i++) {
+    uint16_t units = srv->getPeerInfoByHandle(nat[i]).getConnInterval();
+    if (units <= 12) continue;   // 15 ms or better
+    if (nat[i] != slowConn) {
+      slowConn = nat[i];
+      slowTries = 0;
+      slowAsked = now - 3000;
+    }
+    if (slowTries < 5 && now - slowAsked >= 3000) {
+      slowTries++;
+      slowAsked = now;
+      srv->updateConnParams(nat[i], 6, 12, 0, 200);
+      event("game link %.1f ms: asked for faster", units * 1.25f);
+    }
+    break;
+  }
+
   static size_t lastPeers = 0;
   if (peers.size() > lastPeers) {
     // New central: ask for the shortest interval (the host decides).
