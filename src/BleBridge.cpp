@@ -102,6 +102,23 @@ void disallow(const char *id) {
     }
 }
 bool pairingOpen() { return pairOpenUntilFirst || (pairUntil && (int32_t)(pairUntil - millis()) > 0); }
+/** Delete a pairing. NimBLE refuses (busy) to drop a peer with an IRK while
+ *  advertising - and the board always advertises - so pause it; housekeeping
+ *  starts advertising again. Returns true when the pairing is gone. */
+bool deleteBondNow(const char *addr) {
+  for (int b = 0; b < NimBLEDevice::getNumBonds(); b++) {
+    NimBLEAddress a = NimBLEDevice::getBondedAddress(b);
+    if (strcmp(a.toString().c_str(), addr) != 0) continue;
+    bool adv = NimBLEDevice::getAdvertising()->isAdvertising();
+    if (adv) NimBLEDevice::stopAdvertising();
+    int rc = ble_gap_unpair(a.getBase());
+    if (adv) NimBLEDevice::startAdvertising();
+    if (rc != 0) Serial.printf("[BLE] couldn't delete the pairing with %s (rc %d)\n", addr, rc);
+    return rc == 0;
+  }
+  return true;   // not paired (any more)
+}
+
 void snapshotBonds() {
   allowedCount = 0;
   for (int i = 0; i < NimBLEDevice::getNumBonds() && i < MAX_ALLOWED; i++)
@@ -453,13 +470,7 @@ void housekeeping() {
   portEXIT_CRITICAL(&nmux);
   for (int i = 0; i < nr; i++) {
     srv->disconnect(rConn[i]);
-    for (int b = 0; b < NimBLEDevice::getNumBonds(); b++) {
-      NimBLEAddress a = NimBLEDevice::getBondedAddress(b);
-      if (strcmp(a.toString().c_str(), rAddr[i]) == 0) {
-        NimBLEDevice::deleteBond(a);
-        break;
-      }
-    }
+    deleteBondNow(rAddr[i]);
   }
   if (pairUntil && (int32_t)(pairUntil - now) <= 0) {
     pairUntil = 0;
@@ -782,17 +793,11 @@ void disconnectDevice(const char *addr) {
 
 void forgetDevice(const char *addr) {
   disconnectDevice(addr);
-  for (int i = 0; i < NimBLEDevice::getNumBonds(); i++) {
-    NimBLEAddress a = NimBLEDevice::getBondedAddress(i);
-    if (String(addr) == a.toString().c_str()) {
-      NimBLEDevice::deleteBond(a);
-      break;
-    }
-  }
   portENTER_CRITICAL(&nmux);
-  disallow(addr);
+  disallow(addr);   // first: a reconnect in between is then refused, not re-allowed
   portEXIT_CRITICAL(&nmux);
-  event("forgot %s", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
+  bool ok = deleteBondNow(addr);
+  event(ok ? "forgot %s" : "couldn't forget %s", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
   Serial.printf("[BLE] forgot paired device %s\n", addr);
 }
 
