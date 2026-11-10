@@ -101,6 +101,22 @@ void disallow(const char *id) {
       return;
     }
 }
+// Paired devices disconnected from the screen: turned away until allowed.
+char blocked[MAX_ALLOWED][18];
+int blockedCount = 0;
+bool isBlocked(const char *id) {
+  for (int i = 0; i < blockedCount; i++)
+    if (strcmp(blocked[i], id) == 0) return true;
+  return false;
+}
+void unblock(const char *id) {
+  for (int i = 0; i < blockedCount; i++)
+    if (strcmp(blocked[i], id) == 0) {
+      memcpy(blocked[i], blocked[--blockedCount], 18);
+      return;
+    }
+}
+
 bool pairingOpen() { return pairOpenUntilFirst || (pairUntil && (int32_t)(pairUntil - millis()) > 0); }
 /** Delete a pairing. NimBLE refuses (busy) to drop a peer with an IRK while
  *  advertising - and the board always advertises - so pause it; housekeeping
@@ -529,6 +545,11 @@ void housekeeping() {
     bool seen = false;
     for (int i = 0; i < knownCount; i++) seen |= known[i] == p;
     if (!seen && knownCount < 8) {
+      String pid = srv->getPeerInfoByHandle(p).getIdAddress().toString().c_str();
+      portENTER_CRITICAL(&nmux);
+      bool blk = isBlocked(pid.c_str());
+      portEXIT_CRITICAL(&nmux);
+      if (blk) srv->disconnect(p);   // kept off from the screen
       known[knownCount] = p;
       snprintf(knownAddr[knownCount], sizeof(knownAddr[0]), "%s",
                shortAddr(srv->getPeerInfoByHandle(p).getAddress()).c_str());
@@ -778,6 +799,7 @@ int bonded(BondInfo *out, int max) {
       if (a == srv->getPeerInfoByHandle(p).getIdAddress().toString().c_str()) b.connected = true;
     portENTER_CRITICAL(&nmux);
     b.host = a == hostId;
+    b.blocked = isBlocked(a.c_str());
     portEXIT_CRITICAL(&nmux);
   }
   return n;
@@ -786,15 +808,26 @@ int bonded(BondInfo *out, int max) {
 void disconnectDevice(const char *addr) {
   NimBLEServer *srv = s_server();
   if (!srv) return;
+  portENTER_CRITICAL(&nmux);
+  if (!isBlocked(addr) && blockedCount < MAX_ALLOWED) snprintf(blocked[blockedCount++], 18, "%s", addr);
+  portEXIT_CRITICAL(&nmux);
   for (uint16_t p : srv->getPeerDevices())
     if (String(addr) == srv->getPeerInfoByHandle(p).getIdAddress().toString().c_str()) srv->disconnect(p);
-  event("disconnected %s from the screen", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
+  event("kept %s off (Allow to undo)", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
+}
+
+void allowDevice(const char *addr) {
+  portENTER_CRITICAL(&nmux);
+  unblock(addr);
+  portEXIT_CRITICAL(&nmux);
+  event("allowed %s again", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
 }
 
 void forgetDevice(const char *addr) {
   disconnectDevice(addr);
   portENTER_CRITICAL(&nmux);
   disallow(addr);   // first: a reconnect in between is then refused, not re-allowed
+  unblock(addr);    // forgotten anyway; disconnectDevice() above added it
   portEXIT_CRITICAL(&nmux);
   bool ok = deleteBondNow(addr);
   event(ok ? "forgot %s" : "couldn't forget %s", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
@@ -841,6 +874,19 @@ void divaAuthComplete(NimBLEConnInfo &info) {
   uint16_t h = info.getConnHandle();
   String id = info.getIdAddress().toString().c_str();
   String shortId = id.length() > 6 ? id.substring(id.length() - 5) : id;
+  // Kept off from the screen (Disconnect): turn it away every time.
+  portENTER_CRITICAL(&nmux);
+  bool blk = isBlocked(id.c_str());
+  if (blk && kickCount < MAX_SUBS) kickConn[kickCount++] = h;
+  portEXIT_CRITICAL(&nmux);
+  if (blk) {
+    static uint32_t lastBlk = 0;
+    if (millis() - lastBlk > 30000) {
+      lastBlk = millis();
+      event("kept %s off (disconnected)", shortId.c_str());
+    }
+    return;
+  }
   // Pairing mode: is this device allowed to be paired?
   bool refused = false, newlyPaired = false;
   portENTER_CRITICAL(&nmux);

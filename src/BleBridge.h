@@ -75,11 +75,15 @@ struct BondInfo {
   char addr[18];      // identity address
   bool connected;     // has a link right now
   bool host;          // the one device served (one device at a time)
+  bool blocked;       // disconnected from the screen: kept off until allowed
 };
 /** Paired devices, up to max. */
 int bonded(BondInfo *out, int max);
-/** Drop every link from this paired device (it may reconnect by itself). */
+/** Drop every link from this paired device and keep it off (it's turned away
+ *  when it reconnects) until allowDevice() or a restart. */
 void disconnectDevice(const char *addr);
+/** Let a device kept off by disconnectDevice() connect again. */
+void allowDevice(const char *addr);
 /** Disconnect and forget a paired device (it has to pair again). */
 void forgetDevice(const char *addr);
 

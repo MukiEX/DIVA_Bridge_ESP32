@@ -518,7 +518,7 @@ void pageDots() {
 // Buttons on the devices page (logical coordinates), for tap hit-testing.
 struct Btn {
   Rect r;
-  uint8_t action;   // 1 disconnect, 2 forget, 3 pairing on/off
+  uint8_t action;   // 1 disconnect, 2 forget, 3 pairing on/off, 4 allow
   char addr[18];
 };
 Btn btns[12];
@@ -578,12 +578,14 @@ void drawDevices() {
     int y = y0 + i * (rowH + 6);
     panelBox(14, y, lw - 28, rowH);
     text(28, y + 26, b[i].addr, C_TEXT, u8g2_font_helvB14_tr);
-    const char *st = b[i].host ? "connected - in use" : b[i].connected ? "connected" : "not connected";
-    text(28, y + 52, st, b[i].connected ? C_GREEN : C_DIM, u8g2_font_helvR10_tr);
+    const char *st = b[i].blocked ? "kept disconnected" : b[i].host ? "connected - in use"
+                     : b[i].connected ? "connected" : "not connected";
+    text(28, y + 52, st, b[i].blocked ? C_AMBER : b[i].connected ? C_GREEN : C_DIM, u8g2_font_helvR10_tr);
     int bw = 92, bh = 30, by = y + rowH - bh - 10, bx = lw - 28 - bw;
     bool sure = confirming && strcmp(confirmAddr, b[i].addr) == 0;
     button(bx, by, bw, bh, sure ? "Sure?" : "Forget", sure ? C_RED : rgb(0xE0, 0x80, 0x80), 2, b[i].addr);
-    if (b[i].connected) button(bx - 8 - 108, by, 108, bh, "Disconnect", C_AMBER, 1, b[i].addr);
+    if (b[i].blocked) button(bx - 8 - 108, by, 108, bh, "Allow", C_GREEN, 4, b[i].addr);
+    else if (b[i].connected) button(bx - 8 - 108, by, 108, bh, "Disconnect", C_AMBER, 1, b[i].addr);
   }
   if (n > maxRows) {
     snprintf(line_buf(), 40, "+%d more", n - maxRows);
@@ -604,6 +606,8 @@ bool devicesTap(int x, int y) {
       else BleBridge::openPairing(60);
     } else if (btns[i].action == 1) {
       BleBridge::disconnectDevice(btns[i].addr);
+    } else if (btns[i].action == 4) {
+      BleBridge::allowDevice(btns[i].addr);
     } else if (confirmAddr[0] && millis() < confirmUntil && strcmp(confirmAddr, btns[i].addr) == 0) {
       BleBridge::forgetDevice(btns[i].addr);
       confirmAddr[0] = 0;
