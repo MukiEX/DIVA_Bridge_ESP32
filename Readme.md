@@ -40,7 +40,11 @@ One controller at a time. The serial log says so if a ZhouSensor is in the wrong
   - The live controller view updates up to ~120 times a second. Only the parts that changed (slider, face buttons, L/R/FN, extra buttons) are redrawn and sent to the panel, at low priority, so the controller and Bluetooth always come first.
   - **Swipe left or right** to move between three pages. They loop, and dots under the title show which page you're on. A touch that wakes a dimmed screen does nothing else.
     1. **Controller:** the live tester and status.
-    2. **Devices:** every paired device, shown as connected, connected and in use, or not connected. Each has **Disconnect** and **Forget** buttons. **Disconnect** keeps that device off: it's turned away whenever it reconnects, until you tap **Allow** or the board restarts. **Forget** needs a second tap within 3 s. **Pair new device** opens pairing mode for 60 s.
+    2. **Devices:** every paired device, shown as connected, connected and in use, or not connected. Each has **Disconnect** and **Forget** buttons. **Disconnect** keeps that device off, even across restarts, until you tap **Allow**. Or open pairing mode on the board and connect from the device itself.
+      - The link is closed with the "remote device powered off" reason.
+      - The radio then only accepts connections from the other paired devices, using the BLE accept list (filter accept list). To the disconnected device the board simply looks switched off, so it waits quietly instead of retrying and being turned away.
+      - Paired hosts' private addresses, including the Quest game's own link, are resolved through their saved IRKs.
+      - Pairing mode lifts the filter. **Forget** needs a second tap within 3 s. **Pair new device** opens pairing mode for 60 s.
     3. **Bluetooth:** each link, the handshake and check-in state, input subscription, interval and MTU, the stream rate, and recent events with disconnect reasons.
   - The screen dims after a set idle time (*Dim screen after*, default 1 min). Touching it, or any controller input, wakes it.
   - *Screen rotation* turns the layout 0/90/180/270°. At 90° and 270° it switches to a landscape layout with the status in two columns.

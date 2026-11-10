@@ -578,7 +578,7 @@ void drawDevices() {
     int y = y0 + i * (rowH + 6);
     panelBox(14, y, lw - 28, rowH);
     text(28, y + 26, b[i].addr, C_TEXT, u8g2_font_helvB14_tr);
-    const char *st = b[i].blocked ? "kept disconnected" : b[i].host ? "connected - in use"
+    const char *st = b[i].blocked ? "disconnected - stays off" : b[i].host ? "connected - in use"
                      : b[i].connected ? "connected" : "not connected";
     text(28, y + 52, st, b[i].blocked ? C_AMBER : b[i].connected ? C_GREEN : C_DIM, u8g2_font_helvR10_tr);
     int bw = 92, bh = 30, by = y + rowH - bh - 10, bx = lw - 28 - bw;

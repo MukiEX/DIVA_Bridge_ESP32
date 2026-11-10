@@ -2,6 +2,7 @@
 
 #include <BleCompositeHID.h>
 #include <NimBLEDevice.h>
+#include <Preferences.h>
 #include <XboxGamepadDevice.h>
 #include <stdarg.h>
 #include <string.h>
@@ -115,6 +116,71 @@ void unblock(const char *id) {
       memcpy(blocked[i], blocked[--blockedCount], 18);
       return;
     }
+}
+
+// Kept-off devices survive restarts (NVS "diva_ble"/"blocked", comma-separated).
+void saveBlocked() {
+  String s;
+  for (int i = 0; i < blockedCount; i++) {
+    if (i) s += ',';
+    s += blocked[i];
+  }
+  Preferences p;
+  if (p.begin("diva_ble", false)) {
+    p.putString("blocked", s);
+    p.end();
+  }
+}
+void loadBlocked() {
+  Preferences p;
+  String s;
+  if (p.begin("diva_ble", true)) {
+    s = p.getString("blocked", "");
+    p.end();
+  }
+  blockedCount = 0;
+  int start = 0;
+  while (start < (int)s.length() && blockedCount < MAX_ALLOWED) {
+    int comma = s.indexOf(',', start);
+    if (comma < 0) comma = s.length();
+    String a = s.substring(start, comma);
+    if (a.length() == 17) snprintf(blocked[blockedCount++], 18, "%s", a.c_str());
+    start = comma + 1;
+  }
+}
+
+// The accept list (filter accept list / whitelist): while any device is kept
+// off, the radio only takes connection requests from the other paired devices.
+// A kept-off host then sees the board as switched off - no connection, no
+// retries to turn away. Their private addresses are resolved by the controller
+// from the IRKs NimBLE restores at start-up. Pairing mode lifts the filter.
+// Applied from housekeeping (one task drives advertising).
+bool pairingOpen();
+void event(const char *fmt, ...);
+std::atomic<bool> filterDirty{true};
+bool filterOn = false;
+
+void applyFilter() {
+  NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+  bool want = blockedCount > 0 && !pairingOpen();
+  std::vector<NimBLEAddress> keep;
+  if (want)
+    for (int i = 0; i < NimBLEDevice::getNumBonds(); i++) {
+      NimBLEAddress a = NimBLEDevice::getBondedAddress(i);
+      if (!isBlocked(a.toString().c_str())) keep.push_back(a);
+    }
+  bool was = adv->isAdvertising();
+  if (was) adv->stop();
+  while (NimBLEDevice::getWhiteListCount() > 0)
+    if (!NimBLEDevice::whiteListRemove(NimBLEDevice::getWhiteListAddress(0))) break;
+  for (auto &a : keep) NimBLEDevice::whiteListAdd(a);
+  adv->setScanFilter(false, want);
+  if (was) adv->start();
+  if (want != filterOn) {
+    filterOn = want;
+    event(want ? "accept list on (%d allowed)" : "accept list off", (int)keep.size());
+    Serial.printf("[BLE] accept list %s (%d paired devices allowed)\n", want ? "on" : "off", (int)keep.size());
+  }
 }
 
 bool pairingOpen() { return pairOpenUntilFirst || (pairUntil && (int32_t)(pairUntil - millis()) > 0); }
@@ -338,6 +404,15 @@ class DivaHid : public BleCompositeHID {
       Serial.println("[BLE] all pairings forgotten");
     }
     snapshotBonds();
+    loadBlocked();
+    for (int i = 0; i < blockedCount;) {   // forgotten meanwhile: drop
+      bool paired = false;
+      for (int b = 0; b < NimBLEDevice::getNumBonds(); b++)
+        paired |= strcmp(NimBLEDevice::getBondedAddress(b).toString().c_str(), blocked[i]) == 0;
+      if (paired) i++;
+      else memcpy(blocked[i], blocked[--blockedCount], 18);
+    }
+    filterDirty = true;
     if (pairOpenUntilFirst) {
       Serial.println("[BLE] nothing paired yet: pairing open for the first device");
       event("nothing paired: pairing open");
@@ -493,6 +568,15 @@ void housekeeping() {
     event("pairing mode closed");
   }
 
+  // Accept list: re-apply after changes and whenever pairing mode opens/closes.
+  static bool lastPairOpen = false;
+  bool po = pairingOpen();
+  if (po != lastPairOpen) {
+    lastPairOpen = po;
+    filterDirty = true;
+  }
+  if (filterDirty.exchange(false) && advStarted) applyFilter();
+
   // Turn away second paired devices (one device at a time).
   portENTER_CRITICAL(&nmux);
   uint16_t kicks[MAX_SUBS];
@@ -549,7 +633,7 @@ void housekeeping() {
       portENTER_CRITICAL(&nmux);
       bool blk = isBlocked(pid.c_str());
       portEXIT_CRITICAL(&nmux);
-      if (blk) srv->disconnect(p);   // kept off from the screen
+      if (blk) srv->disconnect(p, BLE_ERR_RD_CONN_TERM_PWROFF);   // kept off from the screen
       known[knownCount] = p;
       snprintf(knownAddr[knownCount], sizeof(knownAddr[0]), "%s",
                shortAddr(srv->getPeerInfoByHandle(p).getAddress()).c_str());
@@ -811,15 +895,21 @@ void disconnectDevice(const char *addr) {
   portENTER_CRITICAL(&nmux);
   if (!isBlocked(addr) && blockedCount < MAX_ALLOWED) snprintf(blocked[blockedCount++], 18, "%s", addr);
   portEXIT_CRITICAL(&nmux);
+  saveBlocked();
+  filterDirty = true;
+  // "Remote device powered off": hosts treat the board as switched off.
   for (uint16_t p : srv->getPeerDevices())
-    if (String(addr) == srv->getPeerInfoByHandle(p).getIdAddress().toString().c_str()) srv->disconnect(p);
-  event("kept %s off (Allow to undo)", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
+    if (String(addr) == srv->getPeerInfoByHandle(p).getIdAddress().toString().c_str())
+      srv->disconnect(p, BLE_ERR_RD_CONN_TERM_PWROFF);
+  event("disconnected %s (stays off)", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
 }
 
 void allowDevice(const char *addr) {
   portENTER_CRITICAL(&nmux);
   unblock(addr);
   portEXIT_CRITICAL(&nmux);
+  saveBlocked();
+  filterDirty = true;
   event("allowed %s again", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
 }
 
@@ -829,6 +919,8 @@ void forgetDevice(const char *addr) {
   disallow(addr);   // first: a reconnect in between is then refused, not re-allowed
   unblock(addr);    // forgotten anyway; disconnectDevice() above added it
   portEXIT_CRITICAL(&nmux);
+  saveBlocked();
+  filterDirty = true;
   bool ok = deleteBondNow(addr);
   event(ok ? "forgot %s" : "couldn't forget %s", addr + (strlen(addr) > 5 ? strlen(addr) - 5 : 0));
   Serial.printf("[BLE] forgot paired device %s\n", addr);
@@ -874,9 +966,19 @@ void divaAuthComplete(NimBLEConnInfo &info) {
   uint16_t h = info.getConnHandle();
   String id = info.getIdAddress().toString().c_str();
   String shortId = id.length() > 6 ? id.substring(id.length() - 5) : id;
-  // Kept off from the screen (Disconnect): turn it away every time.
+  // Kept off from the screen (Disconnect): turn it away every time - unless
+  // pairing mode is open, which is how you let it back in from the device.
   portENTER_CRITICAL(&nmux);
   bool blk = isBlocked(id.c_str());
+  if (blk && pairingOpen()) {
+    unblock(id.c_str());
+    blk = false;
+    portEXIT_CRITICAL(&nmux);
+    saveBlocked();
+    filterDirty = true;
+    event("%s reconnected (pairing mode)", shortId.c_str());
+    portENTER_CRITICAL(&nmux);
+  }
   if (blk && kickCount < MAX_SUBS) kickConn[kickCount++] = h;
   portEXIT_CRITICAL(&nmux);
   if (blk) {
